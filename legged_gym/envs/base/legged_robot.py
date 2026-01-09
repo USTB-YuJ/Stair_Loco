@@ -1011,7 +1011,24 @@ class LeggedRobot(BaseTask):
         self.actor_handles = []
         self.envs = []
         self.cam_handles = []
-        self.torso_body_index = body_names.index("torso_link")
+        torso_candidates = []
+        torso_name_cfg = getattr(self.cfg.asset, "torso_name", None)
+        if torso_name_cfg:
+            torso_candidates.append(torso_name_cfg)
+        # common torso/base names across different Unitree-style URDFs
+        torso_candidates.extend(["torso_link", "torso", "trunk", "base", "base_link", "pelvis"])
+        self.torso_body_index = None
+        for torso_name in torso_candidates:
+            if torso_name in body_names:
+                self.torso_body_index = body_names.index(torso_name)
+                break
+        if self.torso_body_index is None:
+            # fall back to first rigid body to avoid hard crash; mass/COM randomization will be less precise
+            self.torso_body_index = 0
+            print(
+                f"[LeggedRobot] WARNING: could not find torso body from candidates {torso_candidates}. "
+                f"Available bodies (first 20): {body_names[:20]}"
+            )
         self.randomized_frictions = torch.zeros(self.num_envs, 1, device=self.device, requires_grad=False)
         self.randomized_added_masses = torch.zeros(self.num_envs, 1, device=self.device, requires_grad=False)
         self.randomized_com_pos = torch.zeros(self.num_envs, 3, device=self.device, requires_grad=False)

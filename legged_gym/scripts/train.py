@@ -40,8 +40,9 @@ def train(args):
 
 if __name__ == '__main__':
     args = get_args()
-    args.task = "g1_16dof_loco"
+    args.task = "h1_loco"
     args.num_envs = 4096
     args.headless = True
     args.max_iterations = 50000
+    args.no_wandb = True
     train(args)
