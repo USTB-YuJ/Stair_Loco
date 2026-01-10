@@ -199,16 +199,21 @@ class Terrain:
                 pad_height=0,
                 num_groups=3,
                 middle_platform_len=1.5)
-        # square terrain
+        # NEW: hurdle terrain (insert after idx=4). Curriculum height: 0.20m -> 0.55m.
         elif choice < self.proportions[5]:
             idx = 5
-            step_height = 0.1 + 0.05 * difficulty
-            terrain_utils.pyramid_stairs_terrain(terrain, step_width=0.31, step_height=-step_height, platform_size=3.)
+            hurdle_h = 0.20 + (0.55 - 0.20) * float(difficulty)
+            hurdle_terrain(terrain, height=hurdle_h, thickness=0.02, x_pos=None, platform_height=0.0)
+        # square terrain
         elif choice < self.proportions[6]:
             idx = 6
-            gap_terrain(terrain, gap_size=0.05 + 0.4 * difficulty, platform_size=3.)
+            step_height = 0.1 + 0.05 * difficulty
+            terrain_utils.pyramid_stairs_terrain(terrain, step_width=0.31, step_height=-step_height, platform_size=3.)
         elif choice < self.proportions[7]:
             idx = 7
+            gap_terrain(terrain, gap_size=0.05 + 0.4 * difficulty, platform_size=3.)
+        elif choice < self.proportions[8]:
+            idx = 8
             pit_terrain(terrain, depth=0.05 + 0.25 * difficulty, platform_size=4.)
 
         terrain.idx = idx
@@ -224,7 +229,7 @@ class Terrain:
         end_y = self.border + (j + 1) * self.width_per_env_pixels
         self.height_field_raw[start_x: end_x, start_y:end_y] = terrain.height_field_raw
 
-        if terrain.idx in [5, 6, 7]:
+        if terrain.idx in [6, 7, 8]:
             env_origin_x = (i + 0.5) * self.env_length
         else:
             env_origin_x = i * self.env_length + 1.0
@@ -438,6 +443,39 @@ def parkour_pit_terrain(terrain,
     terrain.height_field_raw[:, -pad_width:] = pad_height
     terrain.height_field_raw[:pad_width, :] = pad_height
     terrain.height_field_raw[-pad_width:, :] = pad_height
+
+def hurdle_terrain(terrain, height=0.5, thickness=0.02, x_pos=None, platform_height=0.0):
+    """Create a hurdle (rectangular prism) that spans the full terrain width.
+
+    - height: hurdle height in meters
+    - thickness: hurdle thickness along the first axis (meters). Will be quantized to >= 1 cell.
+    - x_pos: center position along the first axis (meters). None => center of the sub-terrain.
+    - platform_height: base platform height (meters)
+    """
+    # Convert meters to heightfield units
+    base_h = int(round(platform_height / terrain.vertical_scale))
+    hurdle_h = int(round(height / terrain.vertical_scale))
+
+    # thickness in cells (>= 1)
+    # thickness_cells = int(round(thickness / terrain.horizontal_scale))
+    # thickness_cells = max(1, thickness_cells)
+    thickness_cells = 1
+
+    # Use actual array shape to avoid width/length naming confusion
+    size_x, size_y = terrain.height_field_raw.shape
+
+    if x_pos is None:
+        x_center = size_x // 2
+    else:
+        x_center = int(round(x_pos / terrain.horizontal_scale))
+        x_center = int(np.clip(x_center, 0, size_x - 1))
+
+    x1 = int(np.clip(x_center - thickness_cells // 2, 0, size_x - 1))
+    x2 = int(np.clip(x1 + thickness_cells, 0, size_x))
+
+    # Flat ground + a high bar across the full width
+    terrain.height_field_raw[:, :] = base_h
+    terrain.height_field_raw[x1:x2, :] = base_h + hurdle_h
 
 def pit_terrain(terrain, depth, platform_size=1.):
     depth = int(depth / terrain.vertical_scale)

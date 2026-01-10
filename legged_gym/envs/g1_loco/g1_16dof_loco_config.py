@@ -34,7 +34,7 @@ class G1_16Dof_Loco_Cfg( LeggedRobotCfg ):
         max_error = 0.1 # for fast
 
         edge_width_thresh = 0
-        horizontal_scale = 0.1 # [m] influence computation time by a lot
+        horizontal_scale = 0.05 #  0.1 [m] influence computation time by a lot
         vertical_scale = 0.005 # [m]
         border_size = 5 # [m]
         height = [0.02, 0.06]
@@ -69,7 +69,8 @@ class G1_16Dof_Loco_Cfg( LeggedRobotCfg ):
                         "slope": 1.,
                         "pit": 1,
                         "gap": 1,
-                        "stair": 1,}
+                        "stair": 1,
+                        "hurdle": 1,}
         terrain_proportions = list(terrain_dict.values())
         
         # trimesh only:
@@ -224,7 +225,7 @@ class G1_16Dof_Loco_Cfg( LeggedRobotCfg ):
         decimation = 4
 
     class asset( LeggedRobotCfg.asset ):
-        file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/g1/g1_16dof_lock_wrist_new_feet.urdf'
+        file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/g1/g1_16dof_lock_wrist_new_feet_fire_extinguisher.urdf'
 
         name = "g1"
         foot_name = "ankle_roll"

@@ -118,4 +118,6 @@ if __name__ == '__main__':
     RECORD_FRAMES = False
     MOVE_CAMERA = False
     args = get_args()
+    args.task = "h1_loco"
+    args.load_run = "/root/autodl-tmp/workspace/MoRE/logs/h1_loco/Jan08_22-01-18_"
     play(args)
