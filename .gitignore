@@ -60,3 +60,5 @@ wandb
 __pycache__
 
 test_discriminator.ipynb
+
+body_mask_data/

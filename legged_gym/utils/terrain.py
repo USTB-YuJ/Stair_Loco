@@ -199,10 +199,10 @@ class Terrain:
                 pad_height=0,
                 num_groups=3,
                 middle_platform_len=1.5)
-        # NEW: hurdle terrain (insert after idx=4). Curriculum height: 0.20m -> 0.55m.
+        # NEW: hurdle terrain (insert after idx=4). Curriculum height: 0.10m -> 0.55m.
         elif choice < self.proportions[5]:
             idx = 5
-            hurdle_h = 0.20 + (0.55 - 0.20) * float(difficulty)
+            hurdle_h = 0.10 + (0.55 - 0.10) * float(difficulty)
             hurdle_terrain(terrain, height=hurdle_h, thickness=0.02, x_pos=None, platform_height=0.0)
         # square terrain
         elif choice < self.proportions[6]:

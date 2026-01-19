@@ -3,20 +3,42 @@ from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobot
 
 class H1_Loco_Cfg(LeggedRobotCfg):
     class init_state(LeggedRobotCfg.init_state):
-        pos = [0.0, 0.0, 0.95]  # x,y,z [m]
+        pos = [0.0, 0.0, 1.0]  # x,y,z [m]
 
         random_default_pos = False
-        default_joint_angles = {  # = target angles [rad] when action = 0.0
-            "left_hip_yaw_joint": 0.0,
-            "left_hip_roll_joint": 0.0,
-            "left_hip_pitch_joint": -0.15,
-            "left_knee_joint": 0.35,
-            "left_ankle_joint": -0.2,
-            "right_hip_yaw_joint": 0.0,
-            "right_hip_roll_joint": 0.0,
-            "right_hip_pitch_joint": -0.15,
-            "right_knee_joint": 0.35,
-            "right_ankle_joint": -0.2,
+        # default_joint_angles = {  # = target angles [rad] when action = 0.0
+        #     "left_hip_yaw_joint": 0.0,
+        #     "left_hip_roll_joint": 0.0,
+        #     "left_hip_pitch_joint": -0.15,
+        #     "left_knee_joint": 0.35,
+        #     "left_ankle_joint": -0.2,
+        #     "right_hip_yaw_joint": 0.0,
+        #     "right_hip_roll_joint": 0.0,
+        #     "right_hip_pitch_joint": -0.15,
+        #     "right_knee_joint": 0.35,
+        #     "right_ankle_joint": -0.2,
+        # }
+
+        default_joint_angles = { # = target angles [rad] when action = 0.0
+           'left_hip_yaw_joint' : 0. ,   
+           'left_hip_roll_joint' : 0,               
+           'left_hip_pitch_joint' : -0.1,         
+           'left_knee_joint' : 0.3,       
+           'left_ankle_joint' : -0.2,     
+           'right_hip_yaw_joint' : 0., 
+           'right_hip_roll_joint' : 0, 
+           'right_hip_pitch_joint' : -0.1,                                       
+           'right_knee_joint' : 0.3,                                             
+           'right_ankle_joint' : -0.2,                                     
+           'torso_joint' : 0., 
+           'left_shoulder_pitch_joint' : 0., 
+           'left_shoulder_roll_joint' : 0, 
+           'left_shoulder_yaw_joint' : 0.,
+           'left_elbow_joint'  : 0.,
+           'right_shoulder_pitch_joint' : 0.,
+           'right_shoulder_roll_joint' : 0.0,
+           'right_shoulder_yaw_joint' : 0.,
+           'right_elbow_joint' : 0.,
         }
 
     class terrain(LeggedRobotCfg.terrain):
@@ -208,20 +230,39 @@ class H1_Loco_Cfg(LeggedRobotCfg):
 
     class control(LeggedRobotCfg.control):
         control_type = "P"
-        stiffness = {
-            "hip_yaw_joint": 100.0,
-            "hip_roll_joint": 100.0,
-            "hip_pitch_joint": 100.0,
-            "knee_joint": 150.0,
-            "ankle_joint": 40.0,
-        }
-        damping = {
-            "hip_yaw_joint": 2.0,
-            "hip_roll_joint": 2.0,
-            "hip_pitch_joint": 2.0,
-            "knee_joint": 4.0,
-            "ankle_joint": 2.0,
-        }
+        # stiffness = {
+        #     "hip_yaw_joint": 100.0,
+        #     "hip_roll_joint": 100.0,
+        #     "hip_pitch_joint": 100.0,
+        #     "knee_joint": 150.0,
+        #     "ankle_joint": 40.0,
+        # }
+        # damping = {
+        #     "hip_yaw_joint": 2.0,
+        #     "hip_roll_joint": 2.0,
+        #     "hip_pitch_joint": 2.0,
+        #     "knee_joint": 4.0,
+        #     "ankle_joint": 2.0,
+        # }
+
+        stiffness = {'hip_yaw': 150,
+                     'hip_roll': 150,
+                     'hip_pitch': 150,
+                     'knee': 200,
+                     'ankle': 40,
+                     'torso': 300,
+                     'shoulder': 150,
+                     "elbow":100,
+                     }  # [N*m/rad]
+        damping = {  'hip_yaw': 2,
+                     'hip_roll': 2,
+                     'hip_pitch': 2,
+                     'knee': 4,
+                     'ankle': 2,
+                     'torso': 6,
+                     'shoulder': 2,
+                     "elbow":2,
+                     }
         action_scale = 0.25
         decimation = 4
 

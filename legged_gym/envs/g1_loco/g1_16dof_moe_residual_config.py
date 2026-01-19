@@ -224,7 +224,7 @@ class G1_16Dof_MoE_Residual_Cfg( LeggedRobotCfg ):
         decimation = 4
 
     class asset( LeggedRobotCfg.asset ):
-        file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/g1/g1_16dof_lock_wrist_new_feet.urdf'
+        file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/g1/g1_16dof_lock_wrist_new_feet_fire_extinguisher.urdf'
 
         name = "g1"
         foot_name = "ankle_roll"
@@ -336,7 +336,7 @@ class G1_16Dof_MoE_Residual_CfgPPO( LeggedRobotCfgPPO ):
         save_interval = 500
 
         load_loco_policy = True
-        loco_expert_ckpt_path = ""
+        loco_expert_ckpt_path = "/root/autodl-tmp/workspace/MoRE/logs/g1_16dof_loco/Jan09_16-55-16_/model_33000.pt"
 
         num_gait = len(G1_16Dof_MoE_Residual_Cfg.env.amp_motion_files_list)
 
