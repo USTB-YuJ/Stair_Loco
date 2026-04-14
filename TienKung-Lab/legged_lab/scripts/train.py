@@ -31,12 +31,24 @@ parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
+parser.add_argument(
+    "--gpu",
+    type=int,
+    default=None,
+    help="GPU index to run on. If set, overrides --device to cuda:<gpu>.",
+)
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
+if args_cli.gpu is not None:
+    if args_cli.gpu < 0:
+        parser.error("--gpu must be a non-negative integer.")
+    if args_cli.distributed:
+        parser.error("--gpu cannot be used with --distributed.")
+    args_cli.device = f"cuda:{args_cli.gpu}"
 # Start camera rendering for tasks that require RGB/depth sensing
 if args_cli.task and ("sensor" in args_cli.task or "rgb" in args_cli.task or "depth" in args_cli.task):
     args_cli.enable_cameras = True
@@ -73,14 +85,22 @@ def train():
     agent_cfg = update_rsl_rl_cfg(agent_cfg, args_cli)
     env_cfg.scene.seed = agent_cfg.seed
 
+    # Keep simulator/environment/agent on the exact same device.
+    target_device = args_cli.device
     if args_cli.distributed:
-        env_cfg.sim.device = f"cuda:{app_launcher.local_rank}"
-        agent_cfg.device = f"cuda:{app_launcher.local_rank}"
+        target_device = f"cuda:{app_launcher.local_rank}"
 
         # set seed to have diversity in different threads
         seed = agent_cfg.seed + app_launcher.local_rank
         env_cfg.scene.seed = seed
         agent_cfg.seed = seed
+
+    if target_device is not None:
+        if hasattr(env_cfg, "device"):
+            env_cfg.device = target_device
+        if hasattr(env_cfg, "sim") and hasattr(env_cfg.sim, "device"):
+            env_cfg.sim.device = target_device
+        agent_cfg.device = target_device
 
     env = env_class(env_cfg, args_cli.headless)
 
