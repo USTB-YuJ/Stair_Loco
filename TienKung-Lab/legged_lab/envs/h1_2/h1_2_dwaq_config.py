@@ -29,9 +29,9 @@ class H1_2DwaqRewardCfg(G1DwaqRewardCfg):
     body_orientation_l2 = RewTerm(
         func=mdp.body_orientation_l2,
         params={"asset_cfg": SceneEntityCfg("robot", body_names=".*torso.*")},
-        weight=-3.0,
+        weight=-2.5,
     )
-    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-2.0)
+    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-1.3)
 
     # ---- Bipedal gait (H1-sized robot needs stronger air-time incentive) ----
     feet_air_time = RewTerm(
@@ -42,14 +42,14 @@ class H1_2DwaqRewardCfg(G1DwaqRewardCfg):
     feet_too_near = RewTerm(
         func=mdp.feet_too_near_humanoid,
         weight=-2.0,
-        params={"asset_cfg": SceneEntityCfg("robot", body_names=[".*ankle_roll.*"]), "threshold": 0.3},
+        params={"asset_cfg": SceneEntityCfg("robot", body_names=[".*ankle_roll.*"]), "threshold": 0.27},
     )
     feet_force = RewTerm(
         func=mdp.body_force,
-        weight=-2e-3,
+        weight=-1.5e-3,
         params={
             "sensor_cfg": SceneEntityCfg("contact_sensor", body_names=".*ankle_roll.*"),
-            "threshold": 500,
+            "threshold": 1000,
             "max_reward": 400,
         },
     )
