@@ -215,11 +215,11 @@ H1_2_CFG = ArticulationCfg(
                 ".*_ankle_roll_joint": 9.0,
             },
             stiffness={
-                ".*_ankle_pitch_joint": 40.0,
+                ".*_ankle_pitch_joint": 60.0,
                 ".*_ankle_roll_joint": 40.0,
             },
             damping={
-                ".*_ankle_pitch_joint": 2.0,
+                ".*_ankle_pitch_joint": 4.0,
                 ".*_ankle_roll_joint": 2.0,
             },
         ),
