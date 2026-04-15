@@ -89,6 +89,9 @@ class RobotCfg:
     dwaq_obs_history_length: int = 10  # Observation history length for DWAQ encoder
     action_scale: float = 0.25
     terminate_contacts_body_names: list = []
+    termination_contact_force_threshold: float = 1.0
+    # Reset on excessive tilt. Set < 0 to disable this criterion.
+    termination_tilt_threshold_deg: float = -1.0
     feet_body_names: list = []
     gait_phase: GaitPhaseCfg = GaitPhaseCfg()  # Gait phase configuration
 

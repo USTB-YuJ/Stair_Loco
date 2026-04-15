@@ -53,6 +53,10 @@ from legged_lab.envs.h1.h1_config import (
     H1RoughAgentCfg,
     H1RoughEnvCfg,
 )
+from legged_lab.envs.h1.h1_dwaq_config import (
+    H1DwaqAgentCfg,
+    H1DwaqEnvCfg,
+)
 from legged_lab.envs.h1_2.h1_2_config import (
     H1_2FlatAgentCfg,
     H1_2FlatEnvCfg,
@@ -76,6 +80,7 @@ task_registry.register(
 )
 task_registry.register("h1_flat", BaseEnv, H1FlatEnvCfg(), H1FlatAgentCfg())
 task_registry.register("h1_rough", BaseEnv, H1RoughEnvCfg(), H1RoughAgentCfg())
+task_registry.register("h1_dwaq", G1DwaqEnv, H1DwaqEnvCfg(), H1DwaqAgentCfg())
 task_registry.register("h1_2_flat", BaseEnv, H1_2FlatEnvCfg(), H1_2FlatAgentCfg())
 task_registry.register("h1_2_rough", G1Env, H1_2RoughEnvCfg(), H1_2RoughAgentCfg())
 task_registry.register("h1_2_dwaq", G1DwaqEnv, H1_2DwaqEnvCfg(), H1_2DwaqAgentCfg())

@@ -254,6 +254,7 @@ class BaseEnv(VecEnv):
 
     def check_reset(self):
         net_contact_forces = self.contact_sensor.data.net_forces_w_history
+        contact_force_threshold = self.cfg.robot.termination_contact_force_threshold
 
         reset_buf = torch.any(
             torch.max(
@@ -263,9 +264,19 @@ class BaseEnv(VecEnv):
                 ),
                 dim=1,
             )[0]
-            > 1.0,
+            > contact_force_threshold,
             dim=1,
         )
+
+        tilt_threshold_deg = self.cfg.robot.termination_tilt_threshold_deg
+        if tilt_threshold_deg >= 0.0:
+            # Upright corresponds to projected_gravity_b ~= [0, 0, -1].
+            # cos(tilt) = dot(g_body, [0,0,-1]) = -g_body_z.
+            cos_threshold = np.cos(np.deg2rad(tilt_threshold_deg))
+            projected_gravity_z = self.robot.data.projected_gravity_b[:, 2]
+            tilt_reset = (-projected_gravity_z) < cos_threshold
+            reset_buf |= tilt_reset
+
         time_out_buf = self.episode_length_buf >= self.max_episode_length
         reset_buf |= time_out_buf
         return reset_buf, time_out_buf
