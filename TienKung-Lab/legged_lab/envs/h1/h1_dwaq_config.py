@@ -57,6 +57,7 @@ class H1DwaqEnvCfg(G1DwaqEnvCfg):
         super().__post_init__()
         self.scene.robot = H1_CFG
         self.robot.terminate_contacts_body_names = [".*torso.*", ".*pelvis.*", ".*_knee.*", ".*_elbow.*"]
+        self.robot.termination_contact_force_threshold = 100.0
         # Enable tilt-based reset: terminate when body tilt exceeds 55 degrees.
         self.robot.termination_tilt_threshold_deg = 55.0
         self.robot.feet_body_names = ["left_ankle.*", "right_ankle.*"]

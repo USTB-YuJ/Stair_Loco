@@ -18,6 +18,7 @@
 
 import argparse
 import os
+from re import T
 
 import cv2
 import torch
@@ -86,9 +87,9 @@ def play():
     env_cfg.scene.num_envs = 1
     env_cfg.scene.env_spacing = 6.0
     env_cfg.commands.rel_standing_envs = 0.0
-    env_cfg.commands.ranges.lin_vel_x = (1.0, 1.0)
+    env_cfg.commands.ranges.lin_vel_x = (0.5, 0.5)
     env_cfg.commands.ranges.lin_vel_y = (0.0, 0.0)
-    env_cfg.commands.debug_vis = False  # Disable velocity command arrows
+    env_cfg.commands.debug_vis = True  # Disable velocity command arrows
     env_cfg.scene.height_scanner.drift_range = (0.0, 0.0)
 
     # Disable gait phase if --no_gait is specified

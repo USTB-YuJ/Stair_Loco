@@ -96,7 +96,7 @@ class H1RewardCfg(RewardCfg):
     joint_deviation_waist = RewTerm(
         func=mdp.joint_deviation_l1_always,
         weight=-0.5,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*torso.*", ".*waist.*"])},
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*torso_joint.*"])},
     )
     joint_deviation_legs = RewTerm(
         func=mdp.joint_deviation_l1,
