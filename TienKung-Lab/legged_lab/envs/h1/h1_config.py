@@ -89,9 +89,14 @@ class H1RewardCfg(RewardCfg):
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw.*", ".*_hip_roll.*"])},
     )
     joint_deviation_arms = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-0.2,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*torso.*", ".*_shoulder.*", ".*_elbow.*"])},
+        func=mdp.joint_deviation_l1_always,
+        weight=-0.5,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_shoulder.*", ".*_elbow.*"])},
+    )
+    joint_deviation_waist = RewTerm(
+        func=mdp.joint_deviation_l1_always,
+        weight=-0.5,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*torso.*", ".*waist.*"])},
     )
     joint_deviation_legs = RewTerm(
         func=mdp.joint_deviation_l1,
