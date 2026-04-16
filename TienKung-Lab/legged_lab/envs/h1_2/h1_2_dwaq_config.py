@@ -67,7 +67,7 @@ class H1_2DwaqRewardCfg(G1DwaqRewardCfg):
     )
     joint_deviation_arms = RewTerm(
         func=mdp.joint_deviation_l1_always,
-        weight=-0.2,
+        weight=-0.6,
         params={
             "asset_cfg": SceneEntityCfg(
                 "robot",
