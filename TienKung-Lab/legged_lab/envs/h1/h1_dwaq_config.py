@@ -19,6 +19,11 @@ from legged_lab.envs.h1.h1_config import H1RewardCfg
 class H1DwaqRewardCfg(H1RewardCfg):
     """H1 reward baseline + DWAQ-specific terms."""
 
+    upright_posture_reward = RewTerm(
+        func=mdp.body_orientation_exp,
+        params={"asset_cfg": SceneEntityCfg("robot", body_names=".*torso.*"), "std": 0.3},
+        weight=2.0,
+    )
     alive = RewTerm(func=mdp.alive, weight=0.15)
     idle_penalty = RewTerm(
         func=mdp.idle_when_commanded,

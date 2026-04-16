@@ -178,6 +178,23 @@ def body_orientation_l2(
     return torch.sum(torch.square(body_orientation[:, :2]), dim=1)
 
 
+def body_orientation_exp(
+    env: BaseEnv | TienKungEnv | G1Env,
+    std: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward upright posture with an exponential shaping term.
+
+    Returns values in (0, 1], where 1 means fully upright.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    body_orientation = math_utils.quat_apply_inverse(
+        asset.data.body_quat_w[:, asset_cfg.body_ids[0], :], asset.data.GRAVITY_VEC_W
+    )
+    tilt_error = torch.sum(torch.square(body_orientation[:, :2]), dim=1)
+    return torch.exp(-tilt_error / std**2)
+
+
 def feet_stumble(env: BaseEnv | TienKungEnv, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     return torch.any(
