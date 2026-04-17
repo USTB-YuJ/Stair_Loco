@@ -197,9 +197,10 @@ class Controller:
             time.sleep(self.config.control_dt)
 
     def compute_gait_phase(self) -> np.ndarray:
-        """计算步态相位 (4 维: sin_left, cos_left, sin_right, cos_right)
-        
-        左右腿相位差 offset=0.5，实现交替行走。
+        """计算步态相位 (4 维: sin_left, sin_right, cos_left, cos_right)
+
+        顺序必须和训练侧观测拼接保持一致：
+        [sin(phase_left), sin(phase_right), cos(phase_left), cos(phase_right)]。
         """
         period = self.config.gait_phase_period  # 0.8s
         offset = self.config.gait_phase_offset  # 0.5
@@ -212,11 +213,11 @@ class Controller:
         
         # 转换为 sin/cos
         sin_left = np.sin(2 * np.pi * phase_left)
-        cos_left = np.cos(2 * np.pi * phase_left)
         sin_right = np.sin(2 * np.pi * phase_right)
+        cos_left = np.cos(2 * np.pi * phase_left)
         cos_right = np.cos(2 * np.pi * phase_right)
-        
-        return np.array([sin_left, cos_left, sin_right, cos_right], dtype=np.float32)
+
+        return np.array([sin_left, sin_right, cos_left, cos_right], dtype=np.float32)
 
     def run(self):
         for i in range(len(self.config.joint2motor_idx)):
@@ -255,7 +256,7 @@ class Controller:
         # 添加步态相位 (如果启用)
         if self.config.gait_phase_enable:
             gait_phase = self.compute_gait_phase()
-            obs_base_end = 9 + num_actions * 3  # 96
+            obs_base_end = 9 + num_actions * 3
             self.current_obs[obs_base_end : obs_base_end + 4] = gait_phase
             # 更新步态相位时间
             self.gait_phase_time += self.config.control_dt
