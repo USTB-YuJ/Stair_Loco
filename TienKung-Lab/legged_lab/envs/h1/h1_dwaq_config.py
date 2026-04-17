@@ -22,7 +22,7 @@ class H1DwaqRewardCfg(H1RewardCfg):
     upright_posture_reward = RewTerm(
         func=mdp.body_orientation_exp,
         params={"asset_cfg": SceneEntityCfg("robot", body_names=".*torso.*"), "std": 0.3},
-        weight=2.0,
+        weight=1.0,
     )
     alive = RewTerm(func=mdp.alive, weight=0.15)
     idle_penalty = RewTerm(
@@ -57,7 +57,7 @@ class H1DwaqEnvCfg(G1DwaqEnvCfg):
         super().__post_init__()
         self.scene.robot = H1_CFG
         self.robot.terminate_contacts_body_names = [".*torso.*", ".*pelvis.*", ".*_knee.*", ".*_elbow.*"]
-        self.robot.termination_contact_force_threshold = 100.0
+        self.robot.termination_contact_force_threshold = 300.0
         # Enable tilt-based reset: terminate when body tilt exceeds 55 degrees.
         self.robot.termination_tilt_threshold_deg = 55.0
         self.robot.feet_body_names = ["left_ankle.*", "right_ankle.*"]
