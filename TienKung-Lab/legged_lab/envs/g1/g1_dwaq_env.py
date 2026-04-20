@@ -769,9 +769,83 @@ class G1DwaqEnv(VecEnv):
         )
         move_down *= ~move_up
         self.scene.terrain.update_env_origins(env_ids, move_up, move_down)
-        extras = {}
-        extras["Curriculum/terrain_levels"] = torch.mean(self.scene.terrain.terrain_levels.float())
+        return self._build_terrain_curriculum_logs()
+
+    def _build_terrain_curriculum_logs(self):
+        """Build curriculum logs including per-terrain-type levels."""
+        terrain_levels = self.scene.terrain.terrain_levels.float()
+        extras = {"Curriculum/terrain_levels": torch.mean(terrain_levels)}
+
+        terrain_types = getattr(self.scene.terrain, "terrain_types", None)
+        if terrain_types is None:
+            return extras
+
+        if not isinstance(terrain_types, torch.Tensor):
+            terrain_types = torch.as_tensor(terrain_types, device=terrain_levels.device, dtype=torch.long)
+        else:
+            terrain_types = terrain_types.to(device=terrain_levels.device, dtype=torch.long)
+
+        type_name_map = self._build_terrain_type_name_map()
+        per_name_masks: dict[str, torch.Tensor] = {}
+        for terrain_type_id in torch.unique(terrain_types).tolist():
+            terrain_name = type_name_map.get(int(terrain_type_id), f"type_{int(terrain_type_id):02d}")
+            terrain_mask = terrain_types == int(terrain_type_id)
+            if terrain_name in per_name_masks:
+                per_name_masks[terrain_name] = per_name_masks[terrain_name] | terrain_mask
+            else:
+                per_name_masks[terrain_name] = terrain_mask
+
+        for terrain_name in sorted(per_name_masks.keys()):
+            mask = per_name_masks[terrain_name]
+            if torch.any(mask):
+                extras[f"Curriculum/terrain_levels/{terrain_name}"] = torch.mean(terrain_levels[mask])
+
         return extras
+
+    def _build_terrain_type_name_map(self) -> dict[int, str]:
+        """Infer terrain type id -> sub-terrain name mapping from generator config."""
+        terrain_gen_cfg = getattr(self.cfg.scene, "terrain_generator", None)
+        if terrain_gen_cfg is None:
+            return {}
+
+        sub_terrains = getattr(terrain_gen_cfg, "sub_terrains", None)
+        if not sub_terrains:
+            return {}
+
+        terrain_names = list(sub_terrains.keys())
+        terrain_cfgs = list(sub_terrains.values())
+
+        # If terrain_types are already sub-terrain ids, this direct map will be used.
+        direct_map = {idx: name for idx, name in enumerate(terrain_names)}
+
+        num_cols = getattr(terrain_gen_cfg, "num_cols", None)
+        if num_cols is None:
+            return direct_map
+
+        proportions = [float(getattr(cfg, "proportion", 0.0)) for cfg in terrain_cfgs]
+        proportion_sum = float(sum(proportions))
+        if proportion_sum <= 0.0:
+            return direct_map
+
+        normalized = [p / proportion_sum for p in proportions]
+        raw_counts = [p * int(num_cols) for p in normalized]
+        counts = [int(np.floor(v)) for v in raw_counts]
+        remainder = int(num_cols) - int(sum(counts))
+
+        if remainder > 0:
+            frac = np.asarray([v - np.floor(v) for v in raw_counts])
+            ranked = np.argsort(-frac)
+            for idx in ranked[:remainder]:
+                counts[int(idx)] += 1
+
+        column_map: dict[int, str] = {}
+        col_id = 0
+        for name, cnt in zip(terrain_names, counts):
+            for _ in range(max(cnt, 0)):
+                column_map[col_id] = name
+                col_id += 1
+
+        return column_map if column_map else direct_map
 
     def get_observations(self):
         """
