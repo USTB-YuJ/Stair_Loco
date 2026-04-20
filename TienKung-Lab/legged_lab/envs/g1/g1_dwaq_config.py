@@ -272,22 +272,22 @@ class G1DwaqEnvCfg(BaseEnvCfg):
         # ========== 域随机化配置 (方案B: 标准) ==========
         
         # 1. 动作延迟: 模拟通信/计算延迟 (0-3步 = 0-60ms @ 50Hz)
-        # self.domain_rand.action_delay.enable = True
-        # self.domain_rand.action_delay.params = {"max_delay": 3, "min_delay": 0}
+        self.domain_rand.action_delay.enable = True
+        self.domain_rand.action_delay.params = {"max_delay": 3, "min_delay": 0}
         
         # # 2. 更宽的摩擦力范围: 模拟不同地面材质 (瓷砖/木地板/地毯等)
-        # self.domain_rand.events.physics_material.params["static_friction_range"] = (0.2, 1.25)
-        # self.domain_rand.events.physics_material.params["dynamic_friction_range"] = (0.15, 1.0)
+        self.domain_rand.events.physics_material.params["static_friction_range"] = (0.2, 1.25)
+        self.domain_rand.events.physics_material.params["dynamic_friction_range"] = (0.15, 1.0)
         
         # # 3. 质心偏移随机化: 模拟负载偏移 (±3cm)
-        # self.domain_rand.events.randomize_com = EventTerm(
-        #     func=isaaclab_events.randomize_rigid_body_com,
-        #     mode="startup",
-        #     params={
-        #         "asset_cfg": SceneEntityCfg("robot", body_names=".*torso.*"),
-        #         "com_range": {"x": (-0.03, 0.03), "y": (-0.03, 0.03), "z": (-0.03, 0.03)},
-        #     },
-        # )
+        self.domain_rand.events.randomize_com = EventTerm(
+            func=isaaclab_events.randomize_rigid_body_com,
+            mode="startup",
+            params={
+                "asset_cfg": SceneEntityCfg("robot", body_names=".*torso.*"),
+                "com_range": {"x": (-0.03, 0.03), "y": (-0.03, 0.03), "z": (-0.03, 0.03)},
+            },
+        )
         
         # 4. 执行器增益随机化: 模拟电机差异 (±20%)
         self.domain_rand.events.randomize_actuator_gains = EventTerm(

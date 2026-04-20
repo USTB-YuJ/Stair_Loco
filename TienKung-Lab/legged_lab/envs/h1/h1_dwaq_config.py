@@ -24,7 +24,7 @@ class H1DwaqRewardCfg(H1RewardCfg):
     upright_posture_reward = RewTerm(
         func=mdp.body_orientation_exp,
         params={"asset_cfg": SceneEntityCfg("robot", body_names=".*torso.*"), "std": 0.3},
-        weight=2.0,
+        weight=1.0,
     )
     # 存活奖励: 每步常数 +0.15, 与 termination_penalty 形成平衡, 防止机器人“摆烂自杀”
     alive = RewTerm(func=mdp.alive, weight=0.15)
