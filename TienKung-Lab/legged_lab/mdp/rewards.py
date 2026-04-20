@@ -388,7 +388,7 @@ def feet_swing_height(
     """Simple version: Penalize swing foot height deviation from fixed target.
     
     This is the original simple implementation that uses absolute z-coordinate.
-    Use feet_swing_height() for terrain-aware version.
+    Use feet_swing_clearance() for terrain-aware version.
     
     Args:
         env: Environment.
@@ -414,6 +414,72 @@ def feet_swing_height(
     return torch.sum(pos_error, dim=-1)
 
 
+def feet_swing_clearance(
+    env: BaseEnv,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    target_clearance: float = 0.10,
+    adaptive: bool = True,
+    extra_clearance: float = 0.05,
+    max_target: float = 0.45,
+) -> torch.Tensor:
+    """Penalize swing foot clearance below target (relative to local terrain).
+
+    For each swing foot:
+        clearance = feet_z - terrain_z_under_foot
+        target    = target_clearance (+ forward_obstacle_height + extra if adaptive)
+        deficit   = max(target - clearance, 0)
+
+    Only swing feet (not in contact) are counted. One-sided penalty:
+    only "lifting too low" is punished; lifting higher than target is free.
+
+    This avoids the absolute-z pitfall of feet_swing_height() on stairs:
+    on a stair tread, the swing foot's z grows naturally with terrain z,
+    so the relative clearance stays small and consistent.
+
+    Args:
+        env: Environment. Expected to expose `terrain_height_at_feet` and,
+            optionally, `forward_obstacle_height` (G1DwaqEnv style).
+        sensor_cfg: Contact sensor configuration for feet (left then right).
+        asset_cfg: Robot configuration with body_ids for the same feet order.
+        target_clearance: Baseline minimum clearance above local terrain.
+        adaptive: If True and env exposes `forward_obstacle_height`,
+            target += obstacle + extra_clearance (per foot).
+        extra_clearance: Margin above the forward obstacle when adaptive.
+        max_target: Upper bound for the adaptive target (per foot, in meters).
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    feet_ids = asset_cfg.body_ids
+    sensor_ids = sensor_cfg.body_ids
+
+    net_contact_forces = contact_sensor.data.net_forces_w[:, sensor_ids, :]
+    contact = torch.norm(net_contact_forces, dim=-1) > 1.0  # (num_envs, num_feet)
+
+    feet_z = asset.data.body_pos_w[:, feet_ids, 2]  # (num_envs, num_feet)
+
+    terrain_z = getattr(env, "terrain_height_at_feet", None)
+    if terrain_z is None or terrain_z.shape != feet_z.shape:
+        # Fallback: assume ground is at the lowest foot (works on flat terrain
+        # only; degrades on stairs but never raises).
+        terrain_z = feet_z.min(dim=-1, keepdim=True)[0].expand_as(feet_z)
+
+    clearance = feet_z - terrain_z  # (num_envs, num_feet)
+
+    # print("clearance: ", clearance)
+    
+    target = torch.full_like(clearance, target_clearance)
+    if adaptive:
+        forward_obs = getattr(env, "forward_obstacle_height", None)
+        if forward_obs is not None and forward_obs.shape == clearance.shape:
+            target = (target + forward_obs + extra_clearance).clamp(max=max_target)
+
+    deficit = (target - clearance).clamp(min=0.0)
+    swing = (~contact).float()
+    return torch.sum(deficit.square() * swing, dim=-1)
+
+
 def base_height(
     env: BaseEnv,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
@@ -432,8 +498,33 @@ def base_height(
     """
     asset: Articulation = env.scene[asset_cfg.name]
     current_height = asset.data.root_pos_w[:, 2]
+    # print("current_height: ", current_height)
     return torch.square(current_height - target_height)
 
+def base_height_relative(
+    env: BaseEnv,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    target_height: float = 1.0,
+    one_sided: bool = True,
+) -> torch.Tensor:
+    """Penalize base height (relative to lowest foot) below target.
+
+    relative_height = root_z - min(feet_z)
+    Avoids "crouch walking" without breaking stair climbing.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    feet_ids = sensor_cfg.body_ids
+    feet_z = asset.data.body_pos_w[:, feet_ids, 2]
+    lowest_foot_z = feet_z.min(dim=-1)[0]
+    relative_height = asset.data.root_pos_w[:, 2] - lowest_foot_z
+
+    # print("relative_height: ", relative_height)
+
+    err = target_height - relative_height
+    if one_sided:
+        err = err.clamp(min=0.0)
+    return err.square()
 
 def contact_no_vel(
     env: BaseEnv,
