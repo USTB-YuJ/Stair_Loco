@@ -48,18 +48,18 @@ class H1DwaqRewardCfg(H1RewardCfg):
     # - clearance = feet_z - terrain_z_under_foot (使用支撑脚下方地形)
     # - 自适应: target 会随前方障碍高度自动加大, 鼓励上台阶时多抬脚
     # - 单边: 只罚 “抬太低”, 抬高一点不罚, 不会和上台阶冲突
-    feet_swing_height = RewTerm(
-        func=mdp.feet_swing_clearance,
-        weight=-1.0,
-        params={
-            "sensor_cfg": SceneEntityCfg("contact_sensor", body_names=["left_ankle.*", "right_ankle.*"]),
-            "asset_cfg": SceneEntityCfg("robot", body_names=["left_ankle.*", "right_ankle.*"]),
-            "target_clearance": 0.18,
-            "adaptive": True,
-            "extra_clearance": 0.05,
-            "max_target": 0.40,
-        },
-    )
+    # feet_swing_height = RewTerm(
+    #     func=mdp.feet_swing_clearance,
+    #     weight=-1.0,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg("contact_sensor", body_names=["left_ankle.*", "right_ankle.*"]),
+    #         "asset_cfg": SceneEntityCfg("robot", body_names=["left_ankle.*", "right_ankle.*"]),
+    #         "target_clearance": 0.18,
+    #         "adaptive": True,
+    #         "extra_clearance": 0.05,
+    #         "max_target": 0.40,
+    #     },
+    # )
 
 
 @configclass
@@ -70,7 +70,7 @@ class H1DwaqEnvCfg(G1DwaqEnvCfg):
         super().__post_init__()
         self.scene.robot = H1_CFG
         self.robot.terminate_contacts_body_names = [".*torso.*", ".*pelvis.*", ".*_knee.*", ".*_elbow.*"]
-        self.robot.termination_contact_force_threshold = 500.0
+        self.robot.termination_contact_force_threshold = 1000.0
         # Enable tilt-based reset: terminate when body tilt exceeds 55 degrees.
         self.robot.termination_tilt_threshold_deg = 55.0
         self.robot.feet_body_names = ["left_ankle.*", "right_ankle.*"]

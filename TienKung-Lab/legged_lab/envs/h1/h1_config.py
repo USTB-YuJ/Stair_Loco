@@ -33,9 +33,9 @@ from legged_lab.terrains import GRAVEL_TERRAINS_CFG, ROUGH_TERRAINS_CFG
 class H1RewardCfg(RewardCfg):
     # ===== 任务跟踪 (正向): 鼓励跟随速度命令 =====
     # 跟踪 xy 线速度命令: exp(-||vel_cmd - vel_actual||^2 / std^2)
-    track_lin_vel_xy_exp = RewTerm(func=mdp.track_lin_vel_xy_yaw_frame_exp, weight=1.0, params={"std": 0.5})
+    track_lin_vel_xy_exp = RewTerm(func=mdp.track_lin_vel_xy_yaw_frame_exp, weight=3.0, params={"std": 0.5})
     # 跟踪 yaw 角速度命令, 同样 exp 形式
-    track_ang_vel_z_exp = RewTerm(func=mdp.track_ang_vel_z_world_exp, weight=1.0, params={"std": 0.5})
+    track_ang_vel_z_exp = RewTerm(func=mdp.track_ang_vel_z_world_exp, weight=3.0, params={"std": 0.5})
 
     # ===== 姿态/稳定性 (负向): 抑制晃动和倾斜 =====
     # 抑制 base 的 z 方向线速度 (抑制蹦跳)
