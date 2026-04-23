@@ -1,0 +1,65 @@
+# H1 + RealSense D435I depth camera deployment config
+control_dt: 0.02
+
+msg_type: "go"       # H1 uses "go" msg type
+imu_type: "torso"    # H1 IMU is on the torso
+
+weak_motor: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+
+lowcmd_topic: "rt/lowcmd"
+lowstate_topic: "rt/lowstate"
+
+# 相对路径以项目根目录为基准；也可用绝对路径。请将导出的 JIT 放到该路径。
+policy_path: pre_train/policy_depth_1.pt
+
+# Joint mapping: policy index (0-9) -> SDK motor index
+#   0: left_hip_yaw   -> 7    5: right_hip_yaw   -> 8
+#   1: left_hip_roll   -> 3    6: right_hip_roll   -> 0
+#   2: left_hip_pitch  -> 4    7: right_hip_pitch  -> 1
+#   3: left_knee       -> 5    8: right_knee       -> 2
+#   4: left_ankle      -> 10   9: right_ankle      -> 11
+leg_joint2motor_idx: [7, 3, 4, 5, 10, 8, 0, 1, 2, 11]
+
+kps: [150, 150, 150, 200, 40,  150, 150, 150, 200, 40]
+kds: [2, 2, 2, 4, 2,  2, 2, 2, 4, 2]
+default_angles: [0,  0.0,  -0.1,  0.3, -0.2,
+                 0,  0.0,  -0.1,  0.3, -0.2]
+
+arm_waist_joint2motor_idx: [6,
+                            16, 17, 18, 19,
+                            12, 13, 14, 15]
+
+arm_waist_kps: [300,
+                100, 100, 50, 50,
+                100, 100, 50, 50]
+
+arm_waist_kds: [3,
+                2, 2, 2, 2,
+                2, 2, 2, 2]
+
+arm_waist_target: [ 0,
+                    0, 0, 0, 0,
+                    0, 0, 0, 0]
+
+ang_vel_scale: 0.25
+dof_pos_scale: 1.0
+dof_vel_scale: 0.05
+action_scale: 0.25
+cmd_scale: [2.0, 2.0, 0.25]
+num_actions: 10
+num_obs: 39
+
+max_cmd: [0.8, 0.5, 1.57]
+
+# Depth camera parameters
+obs_history_len: 10
+depth_buffer_len: 3
+cam_update_interval: 5    # update depth every 5 control steps => 10 Hz
+depth_near_clip: 0.0
+depth_far_clip: 2.0
+# 分辨率：宽 depth_width × 高 depth_height = 64×48；张量默认 [..., 48, 64]（H×W）
+depth_height: 48
+depth_width: 64
+depth_rot90_k: 0          # 0 = RealSense mounted upright (USB port down)
+# 策略 depth 维顺序：HW = [..., 48, 64]（与训练侧文档一致）；若 JIT 为 [..., 64, 48] 改为 WH
+depth_tensor_layout: HW
