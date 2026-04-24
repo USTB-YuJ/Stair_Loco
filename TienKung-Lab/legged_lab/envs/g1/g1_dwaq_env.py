@@ -50,6 +50,7 @@ import torch
 from isaaclab.assets.articulation import Articulation
 from isaaclab.utils import math as math_utils
 from isaaclab.envs.mdp.commands import UniformVelocityCommand, UniformVelocityCommandCfg
+from legged_lab.envs.g1.target_point_velocity_command import TargetPointVelocityCommand
 from isaaclab.managers import EventManager, RewardManager
 from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 from isaaclab.scene import InteractiveScene
@@ -146,10 +147,15 @@ class G1DwaqEnv(VecEnv):
             rel_heading_envs=self.cfg.commands.rel_heading_envs,
             heading_command=self.cfg.commands.heading_command,
             heading_control_stiffness=self.cfg.commands.heading_control_stiffness,
-            debug_vis=self.cfg.commands.debug_vis,
+            debug_vis=self.cfg.commands.debug_vis and not self.headless,
             ranges=self.cfg.commands.ranges,
         )
-        self.command_generator = UniformVelocityCommand(cfg=command_cfg, env=self)
+        if self.cfg.commands.target_point.enable:
+            self.command_generator = TargetPointVelocityCommand(
+                cfg=command_cfg, env=self, target_cfg=self.cfg.commands.target_point
+            )
+        else:
+            self.command_generator = UniformVelocityCommand(cfg=command_cfg, env=self)
         self.reward_manager = RewardManager(self.cfg.reward, self)
 
         self.init_buffers()

@@ -133,6 +133,16 @@ class CommandRangesCfg:
 
 
 @configclass
+class TargetPointCommandCfg:
+    enable: bool = False
+    goal_reached_radius: float = 0.5
+    goal_timeout_s: float = 10.0
+    terrain_margin: float = 1.0
+    min_goal_distance: float = 1.0
+    distance_to_max_speed: float = 2.0
+
+
+@configclass
 class CommandsCfg:
     resampling_time_range: tuple = (10.0, 10.0)
     rel_standing_envs: float = 0.2
@@ -141,6 +151,7 @@ class CommandsCfg:
     heading_control_stiffness: float = 0.5
     debug_vis: bool = False  # Disable velocity command arrows visualization
     ranges: CommandRangesCfg = CommandRangesCfg()
+    target_point: TargetPointCommandCfg = TargetPointCommandCfg()
 
 
 @configclass

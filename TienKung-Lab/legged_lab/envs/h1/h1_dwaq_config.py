@@ -109,6 +109,14 @@ class H1DwaqEnvCfg(G1DwaqEnvCfg):
         # Enable tilt-based reset: terminate when body tilt exceeds 55 degrees.
         self.robot.termination_tilt_threshold_deg = 55.0
         self.robot.feet_body_names = ["left_ankle.*", "right_ankle.*"]
+        self.commands.target_point.enable = True
+        self.commands.target_point.goal_reached_radius = 0.5
+        self.commands.target_point.goal_timeout_s = 10.0
+        self.commands.target_point.terrain_margin = 1.0
+        self.commands.target_point.min_goal_distance = 1.0
+        self.commands.target_point.distance_to_max_speed = 2.0
+        self.commands.ranges.lin_vel_x = (0.0, self.commands.ranges.lin_vel_x[1])
+        self.commands.ranges.lin_vel_y = (0.0, 0.0)
 
 
 @configclass
