@@ -17,6 +17,10 @@ policy_path: "policy/h1_dwaq_phase/policy.pt"
 dwaq_obs_history_length: 5
 history_length: 5
 
+# Policy controls only lower-body joints, while deployment still reads/sends full H1 joints.
+full_num_actions: 19
+controlled_joint_indices: [0, 1, 3, 4, 7, 8, 11, 12, 15, 16]
+
 # Isaac Lab action order -> Unitree motor index
 joint2motor_idx: [7, 8, 6, 3, 0, 16, 12, 4, 1, 17, 13, 5, 2, 18, 14, 10, 11, 19, 15]
 
@@ -36,10 +40,10 @@ dof_vel_scale: 1.0
 action_scale: 0.25
 command_scale: [1.0, 1.0, 1.0]
 
-# H1 DWAQ with gait phase:
-# ang_vel(3) + gravity(3) + command(3) + joint_pos(19) + joint_vel(19) + action(19) + gait_phase(4) = 70
-num_actions: 19
-num_obs: 70
+# H1 lower-body DWAQ with gait phase:
+# ang_vel(3) + gravity(3) + command(3) + joint_pos(10) + joint_vel(10) + action(10) + gait_phase(4) = 40
+num_actions: 10
+num_obs: 40
 
 gait_phase:
   enable: true

@@ -47,6 +47,10 @@ class Config:
             self.command_scale = np.array(config["command_scale"], dtype=np.float32)
 
             self.num_actions = config["num_actions"]
+            self.full_num_actions = config.get("full_num_actions", self.num_actions)
+            self.controlled_joint_indices = np.array(
+                config.get("controlled_joint_indices", list(range(self.num_actions))), dtype=np.int64
+            )
             self.num_obs = config["num_obs"]
 
             self.history_length = config["history_length"]

@@ -88,6 +88,10 @@ class RobotCfg:
     critic_obs_history_length: int = 10
     dwaq_obs_history_length: int = 10  # Observation history length for DWAQ encoder
     action_scale: float = 0.25
+    # Optional joint subset control. If None, all joints are controlled.
+    controlled_joint_names: list | None = None
+    # Optional fixed joints that should be held at default joint positions.
+    fixed_joint_names: list | None = None
     terminate_contacts_body_names: list = []
     termination_contact_force_threshold: float = 10.0
     # Reset on excessive tilt. Set < 0 to disable this criterion.

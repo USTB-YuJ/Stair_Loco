@@ -161,8 +161,8 @@ bash export_dwaq_policy.sh
 ```bash
 python legged_lab/scripts/export_dwaq_policy.py \
     --checkpoint logs/h1_dwaq/2026-04-17_10-22-42/model_5300.pt \
-    --num_obs 70 \
-    --num_actions 19 \
+   --num_obs 40 \
+   --num_actions 10 \
     --history_length 5
 ```
 
@@ -205,22 +205,23 @@ python deploy.py --config_path configs/h1_dwaq_phase.yaml --net <network_interfa
 
 当前 H1 DWAQ 主线有 4 个最重要的配置事实：
 
-1. **动作维度**：`19`
-2. **单帧观测维度**：`70`
+1. **动作维度**：`10`（仅下肢）
+2. **单帧观测维度**：`40`
 3. **历史长度**：`5`
 4. **步态相位**：启用
+5. **固定关节**：腰部和上肢始终固定在默认位姿
 
-### 70 维观测组成
+### 40 维观测组成
 
 ```text
 ang_vel (3)
 + projected_gravity (3)
 + command (3)
-+ joint_pos (19)
-+ joint_vel (19)
-+ previous_action (19)
++ joint_pos (10)
++ joint_vel (10)
++ previous_action (10)
 + gait_phase (4)
-= 70
+= 40
 ```
 
 ### gait phase 参数
@@ -297,9 +298,9 @@ offset = 0.5
 而 H1 带步态 DWAQ 部署需要：
 
 - `history_length = 5`
-- `num_obs = 70`
+- `num_obs = 40`
 
-### 2. 为什么导出时必须显式传 `--num_obs 70 --num_actions 19 --history_length 5`？
+### 2. 为什么导出时必须显式传 `--num_obs 40 --num_actions 10 --history_length 5`？
 
 因为 `export_dwaq_policy.py` 的默认值更偏向另一套配置。  
 如果不显式覆盖，导出的 TorchScript 结构可能和 H1 DWAQ 不匹配。

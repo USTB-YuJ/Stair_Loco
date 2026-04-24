@@ -58,8 +58,8 @@ class Controller:
         self.publish_thread = RecurrentThread(interval=1 / 500, target=self.publish)
         self.cmd_lock = Lock()
 
-        self.joint_pos = np.zeros(config.num_actions, dtype=np.float32)
-        self.joint_vel = np.zeros(config.num_actions, dtype=np.float32)
+        self.joint_pos = np.zeros(config.full_num_actions, dtype=np.float32)
+        self.joint_vel = np.zeros(config.full_num_actions, dtype=np.float32)
         self.action = np.zeros(config.num_actions, dtype=np.float32)
 
         self.current_obs = np.zeros(config.num_obs, dtype=np.float32)
@@ -235,8 +235,10 @@ class Controller:
             )
 
         gravity_orientation = get_gravity_orientation(quat)
-        joint_pos = (self.joint_pos - self.config.default_joint_pos) * self.config.dof_pos_scale
-        joint_vel = self.joint_vel * self.config.dof_vel_scale
+        joint_pos_full = (self.joint_pos - self.config.default_joint_pos) * self.config.dof_pos_scale
+        joint_vel_full = self.joint_vel * self.config.dof_vel_scale
+        joint_pos = joint_pos_full[self.config.controlled_joint_indices]
+        joint_vel = joint_vel_full[self.config.controlled_joint_indices]
         ang_vel = ang_vel * self.config.ang_vel_scale
 
         command = np.array(
@@ -272,7 +274,10 @@ class Controller:
         obs = self.current_obs_history.reshape(1, -1).astype(np.float32)
         self.action = self.policy(torch.from_numpy(obs).clip(-100, 100)).clip(-100, 100).detach().numpy().squeeze()
 
-        target_dof_pos = self.config.default_joint_pos + self.action * self.config.action_scale
+        target_dof_pos = self.config.default_joint_pos.copy()
+        target_dof_pos[self.config.controlled_joint_indices] = (
+            target_dof_pos[self.config.controlled_joint_indices] + self.action * self.config.action_scale
+        )
         with self.cmd_lock:
             for i in range(len(self.config.joint2motor_idx)):
                 self.low_cmd.motor_cmd[self.config.joint2motor_idx[i]].q = target_dof_pos[i]

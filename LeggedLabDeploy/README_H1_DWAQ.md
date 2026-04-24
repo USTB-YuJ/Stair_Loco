@@ -29,11 +29,11 @@
 1. **不能直接使用 `configs/h1.yaml`**
    - `h1.yaml` 对应的是普通 H1 策略，不是 DWAQ
    - 它的 `history_length=10`、`num_obs=66`
-   - 而 H1 带步态 DWAQ 需要的是 `history_length=5`、`num_obs=70`
+   - 而当前 H1 下肢专训 DWAQ 需要的是 `history_length=5`、`num_obs=40`
 
 2. **需要使用 DWAQ 专用导出脚本**
    - `export_dwaq_policy.py` 会把 `Encoder + Actor` 合成一个单输入 TorchScript
-   - 部署时输入是 `5 * 70 = 350` 维的扁平化观测历史
+   - 部署时输入是 `5 * 40 = 200` 维的扁平化观测历史
 
 3. **步态相位顺序必须与训练侧一致**
    - 训练侧真实顺序是：
@@ -48,25 +48,26 @@
 
 根据 `TienKung-Lab/legged_lab/envs/h1/h1_dwaq_config.py`、`TienKung-Lab/legged_lab/envs/g1/g1_dwaq_config.py` 和 `TienKung-Lab/legged_lab/scripts/sim2sim_h1_dwaq.py`，H1 带步态 DWAQ 的关键部署假设如下：
 
-- 动作维度：`19`
-- 单帧 actor 观测维度：`70`
+- 动作维度：`10`（只控制下肢）
+- 单帧 actor 观测维度：`40`
 - DWAQ 历史长度：`5`
 - gait phase：开启
 - gait phase 参数：
   - `period = 0.8`
   - `offset = 0.5`
+- 固定关节：腰部和上肢保持默认位姿
 
-### 70 维观测组成
+### 40 维观测组成
 
 ```text
 ang_vel (3)
 + projected_gravity (3)
 + command (3)
-+ joint_pos (19)
-+ joint_vel (19)
-+ previous_action (19)
++ joint_pos (10)
++ joint_vel (10)
++ previous_action (10)
 + gait_phase (4)
-= 70
+= 40
 ```
 
 ### gait phase 观测顺序
@@ -113,9 +114,9 @@ ang_vel (3)
 
 - 任务是 `h1_dwaq`
 - 观测带 gait phase
-- 单帧观测维度为 `70`
+- 单帧观测维度为 `40`
 - 历史长度为 `5`
-- 动作维度为 `19`
+- 动作维度为 `10`
 
 如果你的模型不是这组维度，就不要直接套用本文的配置文件。
 
@@ -135,8 +136,8 @@ conda activate geo
 ```bash
 python legged_lab/scripts/export_dwaq_policy.py \
     --checkpoint logs/h1_dwaq/<run_name>/model_<iter>.pt \
-    --num_obs 70 \
-    --num_actions 19 \
+   --num_obs 40 \
+   --num_actions 10 \
     --history_length 5
 ```
 
@@ -145,8 +146,8 @@ python legged_lab/scripts/export_dwaq_policy.py \
 ```bash
 python legged_lab/scripts/export_dwaq_policy.py \
     --checkpoint logs/h1_dwaq/2026-xx-xx_xx-xx-xx/model_10000.pt \
-    --num_obs 70 \
-    --num_actions 19 \
+   --num_obs 40 \
+   --num_actions 10 \
     --history_length 5
 ```
 
@@ -202,7 +203,8 @@ configs/h1_dwaq_phase.yaml
 | 策略类型 | 普通 H1 策略 | H1 带步态 DWAQ |
 | `policy_path` | `policy/h1/policy.pt` | `policy/h1_dwaq_phase/policy.pt` |
 | `history_length` | 10 | 5 |
-| `num_obs` | 66 | 70 |
+| `num_obs` | 66 | 40 |
+| `num_actions` | 19 | 10 |
 | `gait_phase.enable` | 无 | `true` |
 
 ### 说明
@@ -269,8 +271,8 @@ python deploy.py --config_path configs/h1_dwaq_phase.yaml --net eno1
 cd /TienKung-Lab
 python legged_lab/scripts/export_dwaq_policy.py \
     --checkpoint logs/h1_dwaq/<run_name>/model_<iter>.pt \
-    --num_obs 70 \
-    --num_actions 19 \
+   --num_obs 40 \
+   --num_actions 10 \
     --history_length 5
 
 # 拷贝到部署工程

@@ -19,6 +19,39 @@ from legged_lab.envs.h1.h1_config import H1RewardCfg
 class H1DwaqRewardCfg(H1RewardCfg):
     """H1 reward baseline + DWAQ-specific terms."""
 
+    energy = RewTerm(
+        func=mdp.energy,
+        weight=-1e-3,
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                joint_names=[
+                    ".*_hip_yaw_joint",
+                    ".*_hip_roll_joint",
+                    ".*_hip_pitch_joint",
+                    ".*_knee_joint",
+                    ".*_ankle_joint",
+                ],
+            )
+        },
+    )
+    dof_acc_l2 = RewTerm(
+        func=mdp.joint_acc_l2,
+        weight=-1.25e-7,
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                joint_names=[
+                    ".*_hip_yaw_joint",
+                    ".*_hip_roll_joint",
+                    ".*_hip_pitch_joint",
+                    ".*_knee_joint",
+                    ".*_ankle_joint",
+                ],
+            )
+        },
+    )
+
     upright_posture_reward = RewTerm(
         func=mdp.body_orientation_exp,
         params={"asset_cfg": SceneEntityCfg("robot", body_names=".*torso.*"), "std": 0.3},
@@ -56,6 +89,21 @@ class H1DwaqEnvCfg(G1DwaqEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         self.scene.robot = H1_CFG
+        self.robot.controlled_joint_names = [
+            ".*_hip_yaw_joint",
+            ".*_hip_roll_joint",
+            ".*_hip_pitch_joint",
+            ".*_knee_joint",
+            ".*_ankle_joint",
+        ]
+        self.robot.fixed_joint_names = [
+            ".*torso_joint.*",
+            ".*_shoulder.*",
+            ".*_elbow.*",
+        ]
+        self.domain_rand.events.reset_robot_joints.params["asset_cfg"] = SceneEntityCfg(
+            "robot", joint_names=self.robot.controlled_joint_names
+        )
         self.robot.terminate_contacts_body_names = [".*torso.*", ".*pelvis.*", ".*_knee.*", ".*_elbow.*"]
         self.robot.termination_contact_force_threshold = 300.0
         # Enable tilt-based reset: terminate when body tilt exceeds 55 degrees.

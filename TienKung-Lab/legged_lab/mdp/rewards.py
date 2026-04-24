@@ -63,7 +63,13 @@ def ang_vel_xy_l2(env: BaseEnv | TienKungEnv, asset_cfg: SceneEntityCfg = SceneE
 
 def energy(env: BaseEnv | TienKungEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     asset: Articulation = env.scene[asset_cfg.name]
-    reward = torch.norm(torch.abs(asset.data.applied_torque * asset.data.joint_vel), dim=-1)
+    if isinstance(asset_cfg.joint_ids, slice):
+        joint_power = asset.data.applied_torque * asset.data.joint_vel
+    elif asset_cfg.joint_ids is not None and len(asset_cfg.joint_ids) > 0:
+        joint_power = asset.data.applied_torque[:, asset_cfg.joint_ids] * asset.data.joint_vel[:, asset_cfg.joint_ids]
+    else:
+        joint_power = asset.data.applied_torque * asset.data.joint_vel
+    reward = torch.norm(torch.abs(joint_power), dim=-1)
     return reward
 
 

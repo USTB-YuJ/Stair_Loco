@@ -62,13 +62,28 @@ LAB_DOF_NAMES = [
     "right_elbow_joint",
 ]
 
+# Controlled lower-body joints in Isaac-Lab order (10 DoF)
+CONTROLLED_LAB_DOF_NAMES = [
+    "left_hip_yaw_joint",
+    "right_hip_yaw_joint",
+    "left_hip_roll_joint",
+    "right_hip_roll_joint",
+    "left_hip_pitch_joint",
+    "right_hip_pitch_joint",
+    "left_knee_joint",
+    "right_knee_joint",
+    "left_ankle_joint",
+    "right_ankle_joint",
+]
+
 
 class H1DwaqSim2SimCfg:
     class sim:
         sim_duration = 100.0
-        num_actions = 19
-        # 3 + 3 + 3 + 19 + 19 + 19 + 4
-        num_obs_per_step = 70
+        # Policy controls lower body only (10 DoF).
+        num_actions = 10
+        # 3 + 3 + 3 + 10 + 10 + 10 + 4
+        num_obs_per_step = 40
         dwaq_obs_history_length = 5
         dt = 0.005
         decimation = 4
@@ -91,11 +106,13 @@ class H1DwaqMujocoRunner(g1_sim2sim.G1DwaqMujocoRunner):
 
     def init_variables(self) -> None:
         self.dt = self.cfg.sim.decimation * self.cfg.sim.dt
-        self.num_actions = self.cfg.sim.num_actions
+        self.policy_num_actions = self.cfg.sim.num_actions
+        # Keep full robot DoFs for MuJoCo state and torque control.
+        self.num_actions = len(MUJOCO_DOF_NAMES)
 
         self.dof_pos = np.zeros(self.num_actions)
         self.dof_vel = np.zeros(self.num_actions)
-        self.action = np.zeros(self.num_actions, dtype=np.float32)
+        self.action = np.zeros(self.policy_num_actions, dtype=np.float32)
 
         # MuJoCo order, aligned with H1_CFG init_state defaults.
         self.default_dof_pos = np.array(
@@ -188,6 +205,7 @@ class H1DwaqMujocoRunner(g1_sim2sim.G1DwaqMujocoRunner):
         lab_indices = {name: idx for idx, name in enumerate(LAB_DOF_NAMES)}
         self.isaac_to_mujoco_idx = [lab_indices[name] for name in MUJOCO_DOF_NAMES]
         self.default_dof_pos_isaac = self.default_dof_pos[self.mujoco_to_isaac_idx]
+        self.controlled_lab_ids = [lab_indices[name] for name in CONTROLLED_LAB_DOF_NAMES]
         print("[INFO] Joint mapping initialized for H1")
 
     def mj29_to_lab29(self, array_mj: np.ndarray) -> np.ndarray:
@@ -218,9 +236,11 @@ class H1DwaqMujocoRunner(g1_sim2sim.G1DwaqMujocoRunner):
         quat = self.data.qpos[3:7].copy()
         projected_gravity = self.get_gravity_orientation(quat)
 
-        # Convert to Isaac action order
-        joint_pos_isaac = self.mj29_to_lab29(dof_pos_mj - self.default_dof_pos)
-        joint_vel_isaac = self.mj29_to_lab29(dof_vel_mj)
+        # Convert to Isaac full order then keep lower-body controlled subset.
+        joint_pos_isaac_full = self.mj29_to_lab29(dof_pos_mj - self.default_dof_pos)
+        joint_vel_isaac_full = self.mj29_to_lab29(dof_vel_mj)
+        joint_pos_isaac = joint_pos_isaac_full[self.controlled_lab_ids]
+        joint_vel_isaac = joint_vel_isaac_full[self.controlled_lab_ids]
         prev_action = np.clip(self.action, -self.cfg.sim.clip_actions, self.cfg.sim.clip_actions)
 
         obs_terms = [
@@ -237,6 +257,17 @@ class H1DwaqMujocoRunner(g1_sim2sim.G1DwaqMujocoRunner):
 
         obs = np.concatenate(obs_terms, axis=0).astype(np.float32)
         return np.clip(obs, -self.cfg.sim.clip_observations, self.cfg.sim.clip_observations)
+
+    def position_control(self) -> np.ndarray:
+        """Map 10-DoF policy actions to full 19-DoF joint targets.
+
+        Controlled lower-body joints follow policy outputs; torso and arms stay at default.
+        """
+        target_isaac_full = self.default_dof_pos_isaac.copy()
+        target_isaac_full[self.controlled_lab_ids] = (
+            target_isaac_full[self.controlled_lab_ids] + self.action * self.cfg.sim.action_scale
+        )
+        return self.lab29_to_mj29(target_isaac_full)
 
 
 def main():

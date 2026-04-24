@@ -171,9 +171,31 @@ class G1DwaqEnv(VecEnv):
 
         self.max_episode_length_s = self.cfg.scene.max_episode_length_s
         self.max_episode_length = np.ceil(self.max_episode_length_s / self.step_dt)
-        self.num_actions = self.robot.data.default_joint_pos.shape[1]
         self.clip_actions = self.cfg.normalization.clip_actions
         self.clip_obs = self.cfg.normalization.clip_observations
+
+        self.robot_cfg = SceneEntityCfg(name="robot")
+        self.robot_cfg.resolve(self.scene)
+        full_num_actions = self.robot.data.default_joint_pos.shape[1]
+        self._full_joint_ids = torch.arange(full_num_actions, dtype=torch.long, device=self.device)
+
+        controlled_joint_names = getattr(self.cfg.robot, "controlled_joint_names", None)
+        if controlled_joint_names:
+            controlled_cfg = SceneEntityCfg(name="robot", joint_names=controlled_joint_names)
+            controlled_cfg.resolve(self.scene)
+            self._controlled_joint_ids = torch.tensor(controlled_cfg.joint_ids, dtype=torch.long, device=self.device)
+        else:
+            self._controlled_joint_ids = self._full_joint_ids
+
+        fixed_joint_names = getattr(self.cfg.robot, "fixed_joint_names", None)
+        if fixed_joint_names:
+            fixed_cfg = SceneEntityCfg(name="robot", joint_names=fixed_joint_names)
+            fixed_cfg.resolve(self.scene)
+            self._fixed_joint_ids = torch.tensor(fixed_cfg.joint_ids, dtype=torch.long, device=self.device)
+        else:
+            self._fixed_joint_ids = torch.empty(0, dtype=torch.long, device=self.device)
+
+        self.num_actions = int(self._controlled_joint_ids.numel())
 
         self.action_scale = self.cfg.robot.action_scale
         self.action_buffer = DelayBuffer(
@@ -192,8 +214,6 @@ class G1DwaqEnv(VecEnv):
             )
             self.action_buffer.set_time_lag(time_lags, torch.arange(self.num_envs, device=self.device))
 
-        self.robot_cfg = SceneEntityCfg(name="robot")
-        self.robot_cfg.resolve(self.scene)
         self.termination_contact_cfg = SceneEntityCfg(
             name="contact_sensor", body_names=self.cfg.robot.terminate_contacts_body_names
         )
@@ -229,6 +249,17 @@ class G1DwaqEnv(VecEnv):
 
         self.init_obs_buffer()
 
+    def _compose_joint_position_targets(self, controlled_actions: torch.Tensor) -> torch.Tensor:
+        """Compose full-DoF joint targets from controlled subspace actions."""
+        default_joint_pos = self.robot.data.default_joint_pos
+        full_targets = default_joint_pos.clone()
+        controlled_targets = controlled_actions * self.action_scale + default_joint_pos[:, self._controlled_joint_ids]
+        full_targets[:, self._controlled_joint_ids] = controlled_targets
+        # Fixed joints are always held at default position.
+        if self._fixed_joint_ids.numel() > 0:
+            full_targets[:, self._fixed_joint_ids] = default_joint_pos[:, self._fixed_joint_ids]
+        return full_targets
+
     def compute_current_observations(self):
         """Compute current step observations for actor and critic."""
         robot = self.robot
@@ -237,8 +268,8 @@ class G1DwaqEnv(VecEnv):
         ang_vel = robot.data.root_ang_vel_b
         projected_gravity = robot.data.projected_gravity_b
         command = self.command_generator.command
-        joint_pos = robot.data.joint_pos - robot.data.default_joint_pos
-        joint_vel = robot.data.joint_vel - robot.data.default_joint_vel
+        joint_pos = (robot.data.joint_pos - robot.data.default_joint_pos)[:, self._controlled_joint_ids]
+        joint_vel = (robot.data.joint_vel - robot.data.default_joint_vel)[:, self._controlled_joint_ids]
         action = self.action_buffer._circular_buffer.buffer[:, -1, :]
 
         # Build actor observation with optional gait phase information
@@ -412,6 +443,12 @@ class G1DwaqEnv(VecEnv):
         # Fill with zeros to avoid using stale data
         self.prev_critic_obs[env_ids] = 0.0
 
+        if self._fixed_joint_ids.numel() > 0:
+            # Preserve current controlled joints while forcing fixed joints to default targets.
+            reset_targets = self.robot.data.joint_pos.clone()
+            reset_targets[:, self._fixed_joint_ids] = self.robot.data.default_joint_pos[:, self._fixed_joint_ids]
+            self.robot.set_joint_position_target(reset_targets)
+
         self.scene.write_data_to_sim()
         self.sim.forward()
 
@@ -446,7 +483,7 @@ class G1DwaqEnv(VecEnv):
         delayed_actions = self.action_buffer.compute(actions)
 
         clipped_actions = torch.clip(delayed_actions, -self.clip_actions, self.clip_actions).to(self.device)
-        processed_actions = clipped_actions * self.action_scale + self.robot.data.default_joint_pos
+        processed_actions = self._compose_joint_position_targets(clipped_actions)
 
         for _ in range(self.cfg.sim.decimation):
             self.sim_step_counter += 1
