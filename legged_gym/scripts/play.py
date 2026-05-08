@@ -2,7 +2,7 @@ from legged_gym import LEGGED_GYM_ROOT_DIR
 import os
 import isaacgym
 from legged_gym.envs import *
-from legged_gym.utils import  get_args, export_policy_as_jit_resi, export_policy_as_jit_depth, task_registry
+from legged_gym.utils import get_args, export_policy_as_jit_depth, task_registry
 import torch
 
 
@@ -41,7 +41,6 @@ def play(args):
     env_cfg.depth.z_pos_range = [0, 0]
     env_cfg.depth.use_camera = False
     env_cfg.depth.warp_camera = True
-    env_cfg.depth.add_body_mask = False
     env_cfg.depth.dis_noise = 0
     env_cfg.depth.gaussian_noise = False
     env_cfg.depth.gaussian_noise_std = 0.05
@@ -81,10 +80,7 @@ def play(args):
     # export policy as a jit module (used to run it from C++)
     if EXPORT_POLICY:
         path = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name, args.load_run, 'exported')
-        if 'Resi' in train_cfg.runner_class_name:
-            export_policy_as_jit_resi(ppo_runner.alg.actor_critic, path)
-        else:
-            export_policy_as_jit_depth(ppo_runner.alg.actor_critic, path)
+        export_policy_as_jit_depth(ppo_runner.alg.actor_critic, path)
         print('Exported policy as jit script to: ', path)
     infos = {}
     if env.cfg.depth.warp_camera:

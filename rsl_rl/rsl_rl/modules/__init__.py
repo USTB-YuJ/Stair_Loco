@@ -30,4 +30,3 @@
 
 from .actor_critic import ActorCritic
 from .actor_critic_depth import ActorCriticDepth
-from .actor_critic_resi_moe import ActorCriticResiMoE

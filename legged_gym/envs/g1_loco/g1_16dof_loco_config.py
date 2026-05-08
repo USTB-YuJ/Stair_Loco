@@ -138,9 +138,6 @@ class G1_16Dof_Loco_Cfg( LeggedRobotCfg ):
         # --------------------------------
 
         # ----- augmentation for deployment -----
-        # body mask
-        add_body_mask = False
-        body_mask_path = './body_mask_data/body_masks_real+sim.npz'
         # crop depth
         crop_depth = False
         crop_pixels = [10, 20, 10, 5] # left top right bottom

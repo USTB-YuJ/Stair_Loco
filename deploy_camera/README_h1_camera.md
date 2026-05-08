@@ -3,8 +3,7 @@
 本目录用于把 `legged_gym/scripts/play.py` 在 `well_stair` 任务下导出的策略
 `logs/h1_loco/well_stair/exported/policy_depth_1.pt` 部署到 **MuJoCo 仿真**
 和 **Unitree H1 实机**。该策略由 `PolicyExporterDepth`
-(`legged_gym/utils/helpers.py`) 导出，是单阶段（无 residual / MoE）的
-本体感知 + 历史 + 深度图端到端策略。
+(`legged_gym/utils/helpers.py`) 导出，是单阶段的本体感知 + 历史 + 深度图端到端策略。
 
 ---
 
@@ -262,24 +261,14 @@ leg_joint2motor_idx: [7, 3, 4, 5, 10,  8, 0, 1, 2, 11]
 - **JIT 加载报错**
   - 该 PT 是 `torch.jit.script` 导出，需要 PyTorch 版本 ≥ 2.0；建议与训练侧
     `rsl_rl` 所依赖的版本保持一致。
-- **二阶段策略**
-  - 当前脚本只覆盖 `policy_depth_1.pt`；若以后做了 residual / MoE，会导出
-    `policy_resi_1.pt`（`PolicyExporterResi`），它的 `forward` 多包含
-    `residual_policies + gate_net + actor_head`，但接口签名仍然是
-    `(obs, history, depth)`，因此只要把 YAML 里的 `policy_path` 换成新的
-    `.pt`，部署脚本无需改动。
-
 ---
 
-## 7. 关于 body mask / 自遮挡的重要说明
+## 7. 关于自遮挡的重要说明
 
-训练时使用的 **Warp 深度渲染器只渲染静态地形 mesh，不渲染机器人自身**
-（见 `body_mask_data/README.md`）。换句话说：
+训练时使用的 **Warp 深度渲染器只渲染静态地形 mesh，不渲染机器人自身**。
+换句话说：
 
 - 一阶段 (`well_stair`) 的 `policy_depth_1.pt` **从未在带自遮挡的深度图上训练过**。
-- `cfg.depth.add_body_mask` 只在二阶段 residual 训练 (`it > 30000`) 时才打开，
-  并且只有 g1 的 `g1_16dof_moe_residual_env.py` 真正加载 `body_masks`。
-- `play.py` 也显式把 `add_body_mask = False` 关掉，导出策略前没有触碰过身体 mask。
 
 但是 **MuJoCo `Renderer.enable_depth_rendering()` 默认会渲染所有 geom**，
 包括机器人自身——头/胸高度俯视的相机会看到自己的大腿/小腿/(部分)手臂，
@@ -316,8 +305,8 @@ terrain_geom_group: 2
 
 后者才是策略训练时见过的分布。
 
-> 完成二阶段 `add_body_mask=True` 的 retrain 之后，把 `hide_robot_in_depth`
-> 改成 `false`，让 mujoco 端把机器人也渲染进深度图，就更贴近真机的 RealSense
+> 训练侧若启用自遮挡渲染（per-env BVH），可把 `hide_robot_in_depth`
+> 改成 `false`，让 mujoco 端把机器人也渲染进深度图，以贴近真机的 RealSense
 > 输入。
 
 ### 7.2 深度图朝向（MuJoCo 必须 `rot90 k=1`）
@@ -336,7 +325,7 @@ MuJoCo 的相机坐标约定是 `+X=右, +Y=上, 沿 -Z 看`。我们 XML 里只
 
 ```python
 raw = renderer.render()
-raw = np.rot90(raw, k=1)  # 见 deploy_mujoco_with_resi.py:106
+raw = np.rot90(raw, k=1)
 ```
 
 这件事 `deploy_mujoco_h1_camera.py` 已通过 yaml 的 `depth_rot90_k: 1` 自动处理。
@@ -360,18 +349,14 @@ raw = np.rot90(raw, k=1)  # 见 deploy_mujoco_with_resi.py:106
 ### 7.4 真机端的不可避免遮挡
 
 真机 RealSense 一定会拍到自己的腿/躯干，没法通过软件"隐藏"。因此对当前
-**没做二阶段训练**的策略，真机部署有以下几种缓解办法（按优先级）：
+**未在自遮挡深度图上训练**的策略，真机部署有以下几种缓解办法（按优先级）：
 
-1. **优先做二阶段 `add_body_mask` 训练**——这是论文/原作者推荐的正路。
-   把训练好的 g1 流程迁到 h1 上：先按 `body_mask_data/README.md` 收集 H1
-   自己的 body mask（用 `play.py` 在 `use_camera=True, warp_camera=True`
-   下保存 `depth_buffer`），然后开二阶段 residual。
+1. **优先在训练侧引入自遮挡 / 遮挡增强**——例如启用 per-env BVH 自遮挡渲染，
+  或对遮挡分布做数据增强后重新训练。
 2. **机械方面把相机抬高/前移/俯角加大**，让机器人自己的腿尽量挪出 FOV。
-3. **软件 mask**：在 `RealSenseDepth._loop` 里硬编码一个固定的"机器人区域
-   mask"（参考 `body_mask_data/*.npz`），把这块区域的深度值强制写成 `1.0`
-   或 `far_clip` 的归一化值——这相当于在线复现训练时的 body mask 增强，但
-   仅当一阶段策略可以容忍 1.0/far 这样的"占位值"时才有效，**不推荐作为长期方案**。
+3. **软件遮挡增强**：在 `RealSenseDepth._loop` 里对固定区域做占位/平滑处理，
+  仅用于调试定位遮挡问题，**不推荐作为长期方案**。
 
 简单地说：**当前你看到的稳定 mask 确实会影响部署**。mujoco 端我们通过隐藏
-机器人 geom 把训练-测试分布对齐了；真机端最稳妥的做法还是补一轮带 body
-mask 的二阶段训练。
+机器人 geom 把训练-测试分布对齐了；真机端更稳妥的做法是让训练分布覆盖自遮挡
+（例如启用 per-env BVH 或加入遮挡增强）。

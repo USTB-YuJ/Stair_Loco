@@ -173,8 +173,6 @@ class H1_Loco_Cfg(LeggedRobotCfg):
 
         random_cam_delay = False
 
-        add_body_mask = False
-        body_mask_path = "./body_mask_data/body_masks_real+sim.npz"
         crop_depth = False
         crop_pixels = [10, 20, 10, 5]
 

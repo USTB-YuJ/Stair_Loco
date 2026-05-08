@@ -10,7 +10,7 @@
 
 1. [策略分析：导出的 PT 权重接口](#1-策略分析导出的-pt-权重接口)
 2. [部署代码搭建](#2-部署代码搭建)
-3. [Body Mask 与自遮挡问题](#3-body-mask-与自遮挡问题)
+3. [自遮挡问题](#3-自遮挡问题)
 4. [深度图朝向修复（rot90）](#4-深度图朝向修复rot90)
 5. [框架问题澄清：AMP / 相机噪声 / 训练时渲染本体](#5-框架问题澄清)
 6. [Per-Env 全身 BVH：设计与实现](#6-per-env-全身-bvh设计与实现)
@@ -26,8 +26,8 @@
 ### 背景
 
 `play.py` 通过 `export_policy_as_jit_depth()` 将训练好的策略（`well_stair`
-任务）导出为 `policy_depth_1.pt`。该策略是**一阶段**训练产物（没有做二阶段
-residual / MoE），使用 `PolicyExporterDepth` 封装。
+任务）导出为 `policy_depth_1.pt`。该策略为**一阶段**训练产物，使用
+`PolicyExporterDepth` 封装。
 
 ### 结论
 
@@ -89,7 +89,7 @@ actions = policy(obs, history, depth)
 
 ---
 
-## 3. Body Mask 与自遮挡问题
+## 3. 自遮挡问题
 
 ### 发现
 
@@ -107,8 +107,8 @@ actions = policy(obs, history, depth)
 训练时的 Warp 渲染器调用 `render_mesh(terrain.vertices, terrain.triangles)`，
 **只塞了地形 mesh**，所以 `policy_depth_1.pt` 的 `depth_encoder` **从未见过自遮挡**。
 
-仓库中的 `add_body_mask` 机制是为 g1 二阶段 residual 训练准备的，H1
-当前配置为 `False`，body_mask 数据集也没有 H1 的。
+当前不再使用 body mask 数据集，改用射线与本体求交（per-env BVH）处理
+自遮挡输入分布。
 
 ### 临时修复（MuJoCo 部署侧）
 
@@ -150,7 +150,6 @@ MuJoCo 相机约定 `+X=右, +Y=上, 沿 -Z 看`。XML 中只做了绕 Y 轴的�
 
 - `deploy_mujoco_h1_camera.py`：`render_depth(..., rot90_k=1)` 默认旋转。
 - 配置 `depth_rot90_k: 1`（MuJoCo），`depth_rot90_k: 0`（RealSense 正装）。
-- 参考：原仓库 `deploy_mujoco_with_resi.py:106` 也使用 `np.rot90(k=1)`。
 
 ---
 
@@ -282,12 +281,6 @@ class depth(LeggedRobotCfg.depth):
     refit_stride = 1
 ```
 
-### 6.8 Body Mask 路径清理
-
-- `legged_robot.py`：`warp_update_depth_buffer` 中 `add_body_mask` 整段删除。
-- `g1_16dof_moe_residual_env.py`：body_masks `np.load` 删除。
-- `moe_residual_on_policy_runner_multi.py`：iter > 30000 的 `add_body_mask = True` 删除。
-
 ### 6.9 跨 env 隔离验证
 
 ```
@@ -413,7 +406,6 @@ gaussian_filter_sigma = 1.0
 | `use_camera` | `False` | OK |
 | `enable_self_occlusion` | `True` | OK |
 | `robot_geom_module` | `"legged_gym.utils.h1_geom"` | OK |
-| `add_body_mask` | `False` | OK（代码已不读） |
 
 ### 启动检查
 
@@ -452,11 +444,9 @@ python legged_gym/scripts/train.py
 | 文件 | 改动摘要 |
 |---|---|
 | `legged_gym/utils/warp_render_v3.py` | 重写 renderer：per-env BVH + dual ray-cast + 移除 pytorch3d 依赖 |
-| `legged_gym/envs/base/legged_robot.py` | 集成 BVH init/update + 删除 body_mask 分支 + 缓存 body_names |
+| `legged_gym/envs/base/legged_robot.py` | 集成 BVH init/update + 缓存 body_names |
 | `legged_gym/envs/base/legged_robot_config.py` | 新增 `enable_self_occlusion` / `robot_geom_module` / `refit_stride` |
 | `legged_gym/envs/h1_loco/h1_loco_config.py` | H1 启用 self-occlusion 三个字段 |
-| `legged_gym/envs/g1_loco/g1_16dof_moe_residual_env.py` | 删除 body_masks np.load |
-| `rsl_rl/rsl_rl/runners/moe_residual_on_policy_runner_multi.py` | 删除 iter>30000 add_body_mask 切换 |
 
 ---
 
@@ -474,14 +464,13 @@ python legged_gym/scripts/train.py
   滚动加随机偏移（模拟 RealSense 帧延迟 jitter）。
 - [ ] 考虑把 `update_interval` 从 5 调到 10（5 Hz depth），更贴近真机帧率。
 - [ ] G1 复刻：提供 `g1_geom.py` 并设置 `robot_geom_module`，让 G1 也能用
-  per-env BVH 替代 body_mask 数据集。
+  per-env BVH 用于自遮挡渲染。
 - [ ] 优化 refit 性能：探索 warp batched BVH refit 或 CUDA graph capture。
 
 ### 低优先级 / 长期
 
 - [ ] Depth 引入 critic：让 value function 也接收深度信息，提高避障任务的
   sample efficiency。
-- [ ] 二阶段 residual 训练与 per-env BVH 的兼容性验证（应该兼容，但未测试）。
 - [ ] 简化几何参数精调：对比 STL 减面和手工 capsule 在渲染质量上的差异。
 
 ---

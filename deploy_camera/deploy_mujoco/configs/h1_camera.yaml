@@ -62,5 +62,5 @@ terrain_geom_group: 2       # group in scene_camera.xml that holds floor/steps
 # (image "up") along the robot's LEFT, so the raw render is rotated 90 deg
 # relative to the natural orientation that the policy was trained on (the Warp
 # renderer's output).  k=1 (np.rot90 CCW once) brings the frame back to
-# top=horizon-ahead, left=robot's-left.  Same as deploy_mujoco_with_resi.py.
+# top=horizon-ahead, left=robot's-left.
 depth_rot90_k: 1

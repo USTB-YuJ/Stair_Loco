@@ -30,4 +30,3 @@
 
 from .on_policy_runner import OnPolicyRunner
 from .amp_on_policy_runner_multi import AMPOnPolicyRunnerMulti
-from .moe_residual_on_policy_runner_multi import MoEResiOnPolicyRunnerMulti

@@ -100,7 +100,7 @@ class RolloutStorageEX:
         self.num_transitions_per_env = num_transitions_per_env
         self.num_envs = num_envs
 
-        # For residual policy
+        # For multi-expert policies
         if num_experts > 1:
             self.gate_weights = torch.zeros(num_transitions_per_env, num_envs, num_experts, device=self.device)
         else:

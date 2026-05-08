@@ -167,10 +167,6 @@ def export_policy_as_jit_depth(actor_critic, path):
     exporter = PolicyExporterDepth(actor_critic)
     exporter.export(path)
 
-def export_policy_as_jit_resi(actor_critic, path):
-    exporter = PolicyExporterResi(actor_critic)
-    exporter.export(path)
-
 class PolicyExporterDepth(torch.nn.Module):
     def __init__(self, actor_critic):
         super().__init__()
@@ -188,39 +184,6 @@ class PolicyExporterDepth(torch.nn.Module):
     def export(self, path):
         os.makedirs(path, exist_ok=True)
         path = os.path.join(path, 'policy_depth_1.pt')
-        self.to('cpu')
-        traced_script_module = torch.jit.script(self)
-        traced_script_module.save(path)
-
-class PolicyExporterResi(torch.nn.Module):
-    def __init__(self, actor_critic):
-        super().__init__()
-        self.actor = copy.deepcopy(actor_critic.actor)
-        self.history_encoder = copy.deepcopy(actor_critic.history_encoder)
-        self.depth_encoder = copy.deepcopy(actor_critic.depth_encoder)
-        self.residual_policies = copy.deepcopy(actor_critic.residual_policies)
-        self.gate_net = copy.deepcopy(actor_critic.gate_net)
-        self.actor_head = copy.deepcopy(actor_critic.actor_head)
-
-    def forward(self, obs, history, depth):
-        history = history.flatten(1)
-        his_feature = self.history_encoder(history)
-        depth_feature = self.depth_encoder(depth)
-        actor_input = torch.cat((obs, his_feature, depth_feature), dim=-1)
-
-        outputs = [net(actor_input[:, 3:]) for net in self.residual_policies]
-        gate_logits = self.gate_net(actor_input)
-        weights = F.softmax(gate_logits, dim=-1)
-        stacked_outputs = torch.stack(outputs, dim=1)
-        residual_feature = torch.sum(weights.unsqueeze(-1) * stacked_outputs, dim=1)
-
-        actor_feature = self.actor(actor_input[:, 3:])
-        actions_mean = self.actor_head(residual_feature + actor_feature)
-        return actions_mean
-    
-    def export(self, path):
-        os.makedirs(path, exist_ok=True)
-        path = os.path.join(path, 'policy_resi_1.pt')
         self.to('cpu')
         traced_script_module = torch.jit.script(self)
         traced_script_module.save(path)

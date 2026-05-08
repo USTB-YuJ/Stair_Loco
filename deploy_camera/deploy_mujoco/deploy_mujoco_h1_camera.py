@@ -72,8 +72,8 @@ def make_depth_scene_option(hide_robot: bool, terrain_group: int = 2):
     first stage. To mimic that distribution in MuJoCo, we keep only the
     terrain group visible and turn off all other geom groups.
 
-    Set `hide_robot=False` to render the full scene (useful when checking
-    real-camera-style inputs after a second-stage `add_body_mask` retrain).
+    Set `hide_robot=False` to render the full scene (useful when validating
+    real-camera-style inputs).
     """
     opt = mujoco.MjvOption()
     mujoco.mjv_defaultOption(opt)
@@ -165,10 +165,9 @@ def main():
     cam_name = cfg.get("cam_name", "depth_cam")
 
     show_depth = bool(cfg.get("show_depth", True))
-    # The first-stage policy was trained with terrain-only depth (warp renderer
-    # skips robot mesh, `add_body_mask=False`). Hiding the robot in the depth
-    # render keeps deployment in-distribution.  After a second-stage retrain
-    # with `add_body_mask=True`, set this to False to simulate the real camera.
+    # The policy was trained with terrain-only depth (warp renderer skips the
+    # robot mesh). Hiding the robot in the depth render keeps deployment
+    # in-distribution. Set this to False to simulate a real camera feed.
     hide_robot_in_depth = bool(cfg.get("hide_robot_in_depth", True))
     terrain_group = int(cfg.get("terrain_geom_group", 2))
     depth_rot90_k = int(cfg.get("depth_rot90_k", 1))

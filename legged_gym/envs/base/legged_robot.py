@@ -187,20 +187,6 @@ class LeggedRobot(BaseTask):
             self.cfg.depth.far_clip - self.cfg.depth.near_clip
         ) - 0.5
 
-        # add body mask
-        if self.cfg.depth.add_body_mask:
-            for i in range(self.cfg.env.num_gait):
-                env_indices = (self.gait_commands.argmax(dim=1) == i).nonzero(as_tuple=False).squeeze(1).to('cpu')
-                rand_idx = np.random.randint(0, len(self.gait_to_indices[i]), (len(env_indices),))
-                selected_masks = torch.tensor(self.body_masks[self.gait_to_indices[i][rand_idx]], device='cpu')
-                depth_images = depth_images.to('cpu')
-                depth_images[env_indices] = torch.where(
-                    selected_masks == 1,
-                    depth_images[env_indices],
-                    selected_masks
-                )
-            depth_images = depth_images.to(self.device)
-
         # gaussian filter
         if self.cfg.depth.gaussian_filter:
             kernel = random.choice(self.cfg.depth.gaussian_filter_kernel)

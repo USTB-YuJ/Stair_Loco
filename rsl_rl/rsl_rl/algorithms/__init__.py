@@ -31,4 +31,3 @@
 from .amp_discriminator_multi import AMPDiscriminatorMulti
 from .ppo import PPO
 from .amp_ppo_multi import AMPPPOMulti
-from .resi_moe_ppo_multi import ResiMoEPPOMulti
