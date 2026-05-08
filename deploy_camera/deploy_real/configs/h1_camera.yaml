@@ -1,0 +1,73 @@
+# Real-robot deployment for the H1 loco-with-depth policy.
+# Use with:
+#   python deploy_real_h1_camera.py {net_interface} h1_camera.yaml
+
+# ---- runtime ----
+control_dt: 0.02              # 50 Hz policy
+msg_type: "go"                # H1 uses go msg
+imu_type: "torso"             # IMU sits on the torso, transformed to pelvis
+weak_motor: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+
+lowcmd_topic:    "rt/lowcmd"
+lowstate_topic:  "rt/lowstate"
+
+# ---- policy ----
+policy_path: "{LEGGED_GYM_ROOT_DIR}/deploy_camera/model/h1/policy_depth_1.pt"
+
+# ---- LEG MOTOR INDEX MAP ----
+# This list maps the *policy* joint index (0..9, in IsaacGym DOF order:
+#   [L hip_yaw, L hip_roll, L hip_pitch, L knee, L ankle,
+#    R hip_yaw, R hip_roll, R hip_pitch, R knee, R ankle])
+# to the H1 SDK motor index used by Unitree.
+# The mapping below is the same one the Unitree-supplied h1.yaml uses for the
+# locomotion policy in this repo.  Verify it against your robot before deployment.
+leg_joint2motor_idx: [7, 3, 4, 5, 10,  8, 0, 1, 2, 11]
+
+kps: [150, 150, 150, 200, 40,  150, 150, 150, 200, 40]
+kds: [2,   2,   2,   4,   2,   2,   2,   2,   4,   2]
+
+default_angles: [0.0, 0.0, -0.1, 0.3, -0.2,
+                 0.0, 0.0, -0.1, 0.3, -0.2]
+
+# ---- ARM/TORSO HOLD ----
+# We hold the upper-body joints at zero with PD; not driven by the policy.
+arm_waist_joint2motor_idx: [6,
+                            16, 17, 18, 19,
+                            12, 13, 14, 15]
+arm_waist_kps:             [300,
+                            100, 100, 50, 50,
+                            100, 100, 50, 50]
+arm_waist_kds:             [3,
+                            2, 2, 2, 2,
+                            2, 2, 2, 2]
+arm_waist_target:          [0,
+                            0, 0, 0, 0,
+                            0, 0, 0, 0]
+
+# ---- observation/action scaling ----
+ang_vel_scale: 0.25
+dof_pos_scale: 1.0
+dof_vel_scale: 0.05
+action_scale:  0.25
+cmd_scale: [2.0, 2.0, 0.25]
+max_cmd:   [0.8, 0.5, 1.57]   # joystick -> physical [vx_max, vy_max, wz_max]
+
+# ---- shapes ----
+num_actions: 10
+num_obs: 39
+obs_history_len: 10
+
+# ---- depth camera (RealSense D435i recommended) ----
+depth_near_clip: 0.0
+depth_far_clip:  2.0
+depth_buffer_len: 3            # policy slices [:, :2]
+depth_size: [48, 64]          # H, W bottom-center crop fed to the policy
+depth_crop_bottom_margin: 0   # 0 = crop touches the bottom edge
+cam_update_interval: 5         # 5 control steps @ 50 Hz -> 10 Hz depth refresh
+realsense_input_size: [480, 640]   # H, W of the raw RealSense depth stream
+realsense_fps: 30
+# Match the camera's physical mounting to the natural image orientation that
+# the policy was trained on (top = horizon ahead, left = robot's left).
+# RealSense mounted upright (USB port at the bottom) -> 0
+# Mounted rotated 90 deg CCW from upright -> 1; CW -> -1; upside-down -> 2
+depth_rot90_k: 0

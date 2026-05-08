@@ -1,0 +1,66 @@
+# H1 loco-with-depth deployment in MuJoCo.
+# Mirrors `legged_gym/envs/h1_loco/h1_loco_config.py` so the policy sees the
+# same observation/action distribution it was trained on.
+
+# ---- policy & scene ----
+policy_path: "{LEGGED_GYM_ROOT_DIR}/logs/h1_loco/Apr22_14-29-19_/exported/policy_depth_1.pt"
+xml_path:    "{LEGGED_GYM_ROOT_DIR}/resources/robots/h1_description/scene_camera.xml"
+
+# ---- timing ----
+simulation_duration: 60.0      # wall-clock seconds before viewer auto-closes
+simulation_dt: 0.002           # physics step (matches IsaacGym training: 0.005/decimation=4)
+control_decimation: 10         # 10 physics steps -> 50 Hz policy
+
+# ---- joint controller (per-leg, 5 joints x 2 legs = 10) ----
+# Stiffness / damping copied from H1_Loco_Cfg.control.{stiffness,damping} via the
+# joint name -> scalar map.  Order matches the actuators in h1_camera.xml:
+#   left  : hip_yaw, hip_roll, hip_pitch, knee, ankle
+#   right : hip_yaw, hip_roll, hip_pitch, knee, ankle
+kps: [150, 150, 150, 200, 40,  150, 150, 150, 200, 40]
+kds: [2,   2,   2,   4,   2,   2,   2,   2,   4,   2]
+
+# ---- nominal pose (matches H1_Loco_Cfg.init_state.default_joint_angles) ----
+default_angles: [0.0, 0.0, -0.1, 0.3, -0.2,
+                 0.0, 0.0, -0.1, 0.3, -0.2]
+
+# ---- observation/action scaling (matches LeggedRobotCfg.normalization.obs_scales) ----
+ang_vel_scale: 0.25
+dof_pos_scale: 1.0
+dof_vel_scale: 0.05
+action_scale:  0.25
+# commands_scale = [obs_scales.lin_vel, obs_scales.lin_vel, obs_scales.ang_vel]
+cmd_scale: [2.0, 2.0, 0.25]
+
+num_actions: 10
+num_obs: 39                 # 9 + 3*num_actions  (no gait, no AMP fields)
+obs_history_len: 10         # legged_robot_config.env.obs_history_len
+
+# ---- velocity command [vx, vy, wz] in m/s, m/s, rad/s ----
+cmd_init: [0.6, 0.0, 0.0]
+
+# ---- depth camera (matches h1_loco_config.depth) ----
+depth_near_clip: 0.0
+depth_far_clip:  2.0
+depth_buffer_len: 3         # = 2 + 1; policy slices [:, :2]
+depth_render_size: [480, 640]  # H, W full camera frame before policy crop
+depth_size: [48, 64]          # H, W bottom-center crop fed to the policy
+depth_vfov: 58.0              # final corrected frame vertical FOV, degrees
+depth_crop_bottom_margin: 0   # 0 = crop touches the bottom edge
+cam_update_interval: 5        # 5 control steps @ 50 Hz -> 10 Hz depth refresh
+cam_name: "depth_cam"
+show_depth: true            # set false in headless runs
+
+# Body-mask handling.  Match the training distribution by hiding the robot's
+# own mesh from the depth render: the warp renderer used during training only
+# rasterizes terrain, so a first-stage policy never saw self-occlusion. After
+# a second-stage retrain with `add_body_mask=True`, flip this to `false` to
+# include the robot body in the depth image (closer to a real RealSense feed).
+hide_robot_in_depth: true
+terrain_geom_group: 2       # group in scene_camera.xml that holds floor/steps
+
+# MuJoCo's image axes for our camera (`euler="0 -0.886627 0"`, ~50.8° pitch) put +Y_cam
+# (image "up") along the robot's LEFT, so the raw render is rotated 90 deg
+# relative to the natural orientation that the policy was trained on (the Warp
+# renderer's output).  k=1 (np.rot90 CCW once) brings the frame back to
+# top=horizon-ahead, left=robot's-left.  Same as deploy_mujoco_with_resi.py.
+depth_rot90_k: 1
