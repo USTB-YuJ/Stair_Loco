@@ -71,23 +71,35 @@ class DepthOnlyFCBackbone58x87(nn.Module):
         return latent
 
 class StackDepthEncoder(nn.Module):
-    def __init__(self, base_backbone: DepthOnlyFCBackbone58x87, buffer_len) -> None:
+    def __init__(self, base_backbone: DepthOnlyFCBackbone58x87, buffer_len=None,
+                 temporal_channels=64, output_dim=128) -> None:
         super().__init__()
         activation = nn.ELU()
         self.base_backbone = base_backbone
+        self.output_dim = output_dim
+        self.buffer_len = buffer_len
 
-        self.conv1d = nn.Sequential(nn.Conv1d(in_channels=buffer_len, out_channels=16, kernel_size=4, stride=2),
-                                    activation,
-                                    nn.Conv1d(in_channels=16, out_channels=16, kernel_size=2),
-                                    activation)
-        self.mlp = nn.Sequential(nn.Linear(16*62, 128), activation)
-        
+        # Temporal conv over time axis; pooling makes it length-agnostic.
+        self.temporal = nn.Sequential(
+            nn.Conv1d(in_channels=base_backbone.output_dim, out_channels=base_backbone.output_dim,
+                      kernel_size=3, padding=1),
+            activation,
+            nn.Conv1d(in_channels=base_backbone.output_dim, out_channels=temporal_channels,
+                      kernel_size=3, padding=1),
+            activation,
+        )
+        self.mlp = nn.Sequential(nn.Linear(temporal_channels * 2, output_dim), activation)
+
     def forward(self, depth_image):
         # depth_image shape: [batch_size, num, 58, 87]
         depth_latent = self.base_backbone(depth_image.flatten(0, 1))  # [batch_size * num, 128]
         depth_latent = depth_latent.reshape(depth_image.shape[0], depth_image.shape[1], -1)  # [batch_size, num, 128]
-        depth_latent = self.conv1d(depth_latent) # [batch_size, 16, 62]
-        depth_latent = self.mlp(depth_latent.flatten(1, 2))
+        depth_latent = depth_latent.transpose(1, 2)  # [batch_size, 128, num]
+        depth_latent = self.temporal(depth_latent)
+        depth_mean = depth_latent.mean(dim=-1)
+        depth_max = torch.max(depth_latent, dim=-1).values
+        depth_latent = torch.cat([depth_mean, depth_max], dim=-1)
+        depth_latent = self.mlp(depth_latent)
         return depth_latent
 
 class ActorCriticDepth(nn.Module):
@@ -100,6 +112,8 @@ class ActorCriticDepth(nn.Module):
                         critic_hidden_dims=[256, 256, 256],
                         his_latent_dim = 64 + 3,
                         history_dim = 570,
+                        depth_buffer_len = 2,
+                        depth_temporal_channels = 64,
                         activation='elu',
                         init_noise_std=1.0,
                         max_grad_norm=10.0,
@@ -114,7 +128,12 @@ class ActorCriticDepth(nn.Module):
 
         # depth encoder
         depth_backbone = DepthOnlyFCBackbone58x87(output_dim=128, output_activation=activation)
-        self.depth_encoder = StackDepthEncoder(depth_backbone, buffer_len=2)
+        self.depth_encoder = StackDepthEncoder(
+            depth_backbone,
+            buffer_len=depth_buffer_len,
+            temporal_channels=depth_temporal_channels,
+            output_dim=depth_backbone.output_dim,
+        )
 
         mlp_input_dim_a = num_actor_obs + his_latent_dim + depth_backbone.output_dim
         mlp_input_dim_c = num_critic_obs + his_latent_dim

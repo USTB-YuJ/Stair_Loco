@@ -8,8 +8,10 @@ The exported policy expects:
     actions = policy(
         obs:     Tensor[1, 39],          # current proprio observation
         history: Tensor[1, 10, 39],      # last 10 proprio observations
-        depth:   Tensor[1, 2, 48, 64],   # 2-frame depth stack (H×W, 4:3)
+        depth:   Tensor[1, D, 64, 64],   # D-frame depth ROI stack (H×W)
     ) -> Tensor[1, 10]                   # action mean for the 10 leg joints
+
+where D = depth_buffer_len from the YAML config.
 
 Joint order convention used in the obs/action vectors (matches IsaacGym DOF order
 declared in `H1_Loco_Cfg.init_state.default_joint_angles`):
@@ -25,8 +27,8 @@ hardware motor indices that the Unitree SDK expects.
 Camera notes:
     - The training env feeds depth in [-0.5, 0.5] where -0.5 = near (0 m) and
       0.5 = far (2 m); we replicate that normalization here.
-    - We keep a 3-frame chronological buffer (newest at the end) and feed
-      `depth[:, :2, ...]` to the policy, mirroring `play.py`.
+        - We keep a depth_buffer_len chronological buffer (newest at the end) and
+            feed the full stack to the policy, mirroring `play.py`.
 """
 
 import argparse
@@ -66,14 +68,13 @@ from config import Config
 class RealSenseDepth:
     """Background-thread RealSense depth grabber.
 
-    Produces a bottom-center H×W crop (default 48×64) from the full RealSense
-    depth frame, then normalizes it to [-0.5, 0.5].  No resize/downsampling is
-    applied before the policy input.
+    Resizes the full RealSense depth frame to the training full-frame size,
+    crops the configured ROI, then normalizes it to [-0.5, 0.5].
     """
 
-    def __init__(self, near_clip=0.0, far_clip=2.0, out_size=(48, 64),
-                 input_size=(480, 640), fps=30, rot90_k=0,
-                 crop_bottom_margin=0):
+    def __init__(self, near_clip=0.0, far_clip=2.0, out_size=(64, 64),
+                 input_size=(480, 640), full_size=(96, 128),
+                 crop_pixels=(32, 32, 32, 0), fps=30, rot90_k=0):
         try:
             import pyrealsense2 as rs  # noqa: F401
         except ImportError as e:
@@ -86,8 +87,9 @@ class RealSenseDepth:
         self.far = float(far_clip)
         self.out_h, self.out_w = int(out_size[0]), int(out_size[1])
         self.in_h, self.in_w = int(input_size[0]), int(input_size[1])
+        self.full_h, self.full_w = int(full_size[0]), int(full_size[1])
+        self.crop_pixels = tuple(int(v) for v in crop_pixels)
         self.fps = int(fps)
-        self.crop_bottom_margin = int(crop_bottom_margin)
         # rot90_k matches the camera's physical orientation to the natural
         # "top = horizon, left = robot's left" image layout the policy was
         # trained on. For a RealSense mounted upright (USB port at the bottom),
@@ -117,11 +119,23 @@ class RealSenseDepth:
                     continue
                 raw = np.asanyarray(depth_frame.get_data())  # uint16, mm-units
                 meters = raw.astype(np.float32) * self.depth_scale
-                # invalid pixels (==0) -> far_clip so they're treated as "far"
+                # invalid pixels (==0) -> far_clip before resize, otherwise
+                # downsampling can smear invalid holes into fake near obstacles.
                 meters[meters <= 1e-3] = self.far
                 if self.rot90_k:
                     meters = np.rot90(meters, k=self.rot90_k).copy()
-                meters = self._crop_bottom_center(meters)
+                meters = cv2.resize(
+                    meters,
+                    (self.full_w, self.full_h),
+                    interpolation=cv2.INTER_AREA,
+                )
+                meters = self._crop_by_pixels(meters)
+                if meters.shape != (self.out_h, self.out_w):
+                    meters = cv2.resize(
+                        meters,
+                        (self.out_w, self.out_h),
+                        interpolation=cv2.INTER_AREA,
+                    )
                 meters = np.clip(meters, self.near, self.far)
                 normalized = (meters - self.near) / (self.far - self.near) - 0.5
                 with self._lock:
@@ -129,16 +143,18 @@ class RealSenseDepth:
         except Exception as e:  # noqa: BLE001
             print(f"[RealSenseDepth] capture thread stopped: {e}")
 
-    def _crop_bottom_center(self, image: np.ndarray) -> np.ndarray:
+    def _crop_by_pixels(self, image: np.ndarray) -> np.ndarray:
         src_h, src_w = image.shape[:2]
-        top = src_h - self.crop_bottom_margin - self.out_h
-        left = (src_w - self.out_w) // 2
-        if top < 0 or left < 0:
+        crop_left, crop_top, crop_right, crop_bottom = self.crop_pixels
+        top = crop_top
+        bottom = src_h - crop_bottom
+        left = crop_left
+        right = src_w - crop_right
+        if top >= bottom or left >= right:
             raise ValueError(
-                f"Cannot crop {self.out_h}x{self.out_w} from RealSense frame "
-                f"{src_h}x{src_w} with bottom_margin={self.crop_bottom_margin}."
+                f"Invalid crop_pixels={self.crop_pixels} for RealSense frame {src_h}x{src_w}."
             )
-        return image[top:top + self.out_h, left:left + self.out_w]
+        return image[top:bottom, left:right]
 
     def read(self) -> np.ndarray:
         with self._lock:
@@ -347,8 +363,7 @@ class CameraController:
                 )
         self.cam_counter += 1
 
-        # The exported policy slices the FIRST 2 frames of the 3-frame buffer
-        depth_in = self.depth_buffer[:, :2, ...]
+        depth_in = self.depth_buffer
         with torch.no_grad():
             action_t = self.policy(obs_tensor, self.trajectory_history, depth_in)
         self.action = action_t.detach().cpu().numpy().squeeze(0).astype(np.float32)
@@ -392,12 +407,13 @@ class CameraConfig(Config):
         self.depth_near_clip = float(cfg["depth_near_clip"])
         self.depth_far_clip = float(cfg["depth_far_clip"])
         self.depth_buffer_len = int(cfg["depth_buffer_len"])
-        self.depth_size = tuple(cfg.get("depth_size", [48, 64]))  # (H, W)
+        self.depth_size = tuple(cfg.get("depth_size", [64, 64]))  # (H, W)
+        self.depth_full_size = tuple(cfg.get("depth_full_size", [96, 128]))
+        self.depth_crop_pixels = tuple(cfg.get("depth_crop_pixels", [32, 32, 32, 0]))
         self.cam_update_interval = int(cfg["cam_update_interval"])
         self.realsense_input_size = tuple(cfg.get("realsense_input_size", [480, 640]))
         self.realsense_fps = int(cfg.get("realsense_fps", 30))
         self.depth_rot90_k = int(cfg.get("depth_rot90_k", 0))
-        self.depth_crop_bottom_margin = int(cfg.get("depth_crop_bottom_margin", 0))
 
 
 # ---------------------------------------------------------------------------
@@ -420,9 +436,10 @@ def main():
         far_clip=config.depth_far_clip,
         out_size=tuple(config.depth_size),
         input_size=config.realsense_input_size,
+        full_size=config.depth_full_size,
+        crop_pixels=config.depth_crop_pixels,
         fps=config.realsense_fps,
         rot90_k=config.depth_rot90_k,
-        crop_bottom_margin=config.depth_crop_bottom_margin,
     )
 
     controller = CameraController(config, depth_source)

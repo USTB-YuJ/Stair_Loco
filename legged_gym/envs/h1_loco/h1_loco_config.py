@@ -145,12 +145,12 @@ class H1_Loco_Cfg(LeggedRobotCfg):
         warp_device = "cuda:0"
 
         position = [0.0576235, 0.01753, 0.42987]
-        original = (64, 64)
+        original = (96, 128)
         resized = (64, 64)
         near_clip = 0
         far_clip = 2
         update_interval = 5
-        buffer_len = 2 + 1
+        buffer_len = 10
         fovy_range = [79.3, 79.3]
 
         y_angle = [42, 48]
@@ -173,8 +173,8 @@ class H1_Loco_Cfg(LeggedRobotCfg):
 
         random_cam_delay = False
 
-        crop_depth = False
-        crop_pixels = [10, 20, 10, 5]
+        crop_depth = True
+        crop_pixels = [32, 32, 32, 0]
 
     class domain_rand(LeggedRobotCfg.domain_rand):
         randomize_friction = True
@@ -304,6 +304,7 @@ class H1_Loco_Cfg(LeggedRobotCfg):
             heading = [-3.14, 3.14]
 
     class rewards(LeggedRobotCfg.rewards):
+        only_positive_rewards = False
         soft_dof_pos_limit = 0.9
         feet_min_lateral_distance_target = 0.14
         clearance_height_target = -0.6
@@ -331,8 +332,8 @@ class H1_Loco_Cfg(LeggedRobotCfg):
             dof_pos_limits = -2.0
             dof_vel_limits = -1.0
             torque_limits = -1.0
-            no_fly = 0.25
-            feet_lateral_distance = 0.5
+            no_fly = -1.0
+            feet_lateral_distance = 0.3
             feet_slippage = -0.25
             feet_contact_force = -2.5e-4
             feet_force_rate = -2.5e-4

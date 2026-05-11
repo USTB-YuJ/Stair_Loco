@@ -149,6 +149,10 @@ def get_args():
         {"name": "--seed", "type": int, "help": "Random seed. Overrides config file if provided."},
         {"name": "--max_iterations", "type": int, "help": "Maximum number of training iterations. Overrides config file if provided."},
 
+        {"name": "--record", "action": "store_true", "default": False, "help": "Record video during play"},
+        {"name": "--record_path", "type": str, "default": None, "help": "Path to save recorded video"},
+        {"name": "--save_depth", "action": "store_true", "default": False, "help": "Save depth images with crop region annotated"},
+        {"name": "--save_depth_path", "type": str, "default": None, "help": "Path to save depth visualizations"},
         {"name": "--mesh_terrain", "action": "store_true", "default": False, "help": "use mesh terrain"},
     ]
     # parse arguments

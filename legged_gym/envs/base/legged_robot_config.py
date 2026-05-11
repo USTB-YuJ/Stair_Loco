@@ -67,8 +67,8 @@ class LeggedRobotCfg(BaseConfig):
         warp_device = 'cuda:0'
 
         position = [0.0576235, 0.01753, 0.42987]
-        original = (64, 64)
-        resized = (64, 64)
+        original = (64, 64)  # full-frame render/camera size before optional ROI crop
+        resized = (64, 64)   # policy input size after crop/resize
         near_clip = 0
         far_clip = 2
         update_interval = 5
@@ -99,7 +99,7 @@ class LeggedRobotCfg(BaseConfig):
         # --------------------------------
 
         # ----- augmentation for deployment -----
-        # crop depth
+        # crop depth: [left, top, right, bottom] in original-frame pixels
         crop_depth = False
         crop_pixels = [10, 20, 10, 5] # left top right bottom
         # ---------------------------------------

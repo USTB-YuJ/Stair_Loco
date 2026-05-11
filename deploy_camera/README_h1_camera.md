@@ -28,7 +28,7 @@ policy = torch.jit.load("policy_depth_1.pt")
 actions = policy(
     obs,      # Tensor[B=1, 39]
     history,  # Tensor[B=1, 10, 39]
-    depth,    # Tensor[B=1, 2, 48, 64]   # H×W，4:3
+    depth,    # Tensor[B=1, D, 64, 64]
 )             # -> Tensor[B=1, 10]   (action mean, 不含噪声)
 ```
 
@@ -65,13 +65,14 @@ trajectory_history = torch.cat(
 )
 ```
 
-### 2.3 `depth`（2 × 48 × 64）
+### 2.3 `depth`（D × 64 × 64）
 
-- 训练时 `cfg.depth.buffer_len = 3`、`update_interval = 5`，所以以 50 Hz 控制
-  对应 **10 Hz 的深度刷新**。
+- D = `depth_buffer_len` in the config.
+
+- 训练时 `cfg.depth.buffer_len = 10`、`update_interval = 5`，所以以 50 Hz 控制
+  对应 **10 Hz 的深度刷新**，约覆盖 1s 深度历史。
 - 缓存按时间顺序排列（最新帧在末尾），策略输入为
-  `depth_buffer[:, :2, ...]`，**即 3 帧里的最旧 2 帧**——这是训练时
-  `play.py:106` 的写法，照搬可以保留训练分布。
+  `depth_buffer`（完整堆叠）。
 - 深度像素值映射到 **`[-0.5, 0.5]`**：
 
   ```text
@@ -82,9 +83,12 @@ trajectory_history = torch.cat(
 - 相机外参（`camera_parent_body = torso_link`，与 `h1_description/urdf/h1.urdf` 一致）：
   - `position = (0.10848, 0.01750, 0.69317)` m（torso 系）
   - `y_angle = [50.8, 50.8]`，roll/yaw 固定为 0（不做相机外参随机化）
-  - `intrinsics = [[384.77294921875, 0, 324.17236328125], [0, 384.77294921875, 236.48226928710938], [0, 0, 1]]`，训练侧 Warp ray 显式使用 `fx/fy/cx/cy`。
-  - `fovy_range = [58, 58]` 仅作为兼容/文档字段保留，不再用于 H1 Warp ray 推导。
-  - 相机采集/渲染分辨率 **480 × 640**（H×W），策略输入为底部居中的 **48 × 64** 直接裁剪；不做 resize 下采样。
+  - 当前训练侧 Warp ray 使用 FOV 路径生成射线；外参保持与实机机械安装一致。
+  - `fovy_range = [79.3, 79.3]` 控制训练侧 Warp full frame 视锥。
+  - 训练侧 Warp 以 **96 × 128**（H×W）作为 full frame，按
+    `crop_pixels = [32, 32, 32, 0]` 裁出中心靠下 **64 × 64** ROI。
+  - 部署侧 RealSense / MuJoCo 先从 **480 × 640**（H×W）resize 到
+    **96 × 128**，再使用同一 `crop_pixels` 裁出 **64 × 64** ROI。
 
 ### 2.4 输出 `action`
 
@@ -129,8 +133,8 @@ mj_step ──┬─► PD: tau = kp(target_dof_pos − q) − kd · dq
                 ┌─ 拼接 obs (39)
                 ├─ 滚动 trajectory_history (10×39)
                 ├─ 每 cam_update_interval (=5) 个控制步：
-                │     渲染 depth_cam → 480×640 → 底部居中裁剪 48×64 → 归一化 → 推入 depth_buffer
-                ├─ depth_in = depth_buffer[:, :2]
+                │     渲染 depth_cam → 480×640 → resize 96×128 → 裁 ROI 64×64 → 归一化 → 推入 depth_buffer
+                ├─ depth_in = depth_buffer
                 ├─ action = policy(obs, history, depth_in)
                 └─ target_dof_pos = default + action × 0.25
 ```
@@ -154,7 +158,7 @@ mj_step ──┬─► PD: tau = kp(target_dof_pos − q) − kd · dq
 
 - Unitree H1 + 厂家原版控制器；通过以太网与上位机直连。
 - 头部/躯干按 URDF 安装一台 Intel RealSense（推荐 D435i），外参与训练
-  `depth.position` / `y_angle` 一致，深度流内参与 `depth.intrinsics` 一致（见上表与 `h1_camera.xml`）。
+  `depth.position` / `y_angle` 一致，并使用同一 resize + ROI 流程（见上表与 `h1_camera.xml`）。
 - 上位机能 import `unitree_sdk2py` 与 `pyrealsense2`，且具备 root 权限或
   能访问相应的 USB / 网络设备。
 
@@ -198,8 +202,9 @@ python deploy_real_h1_camera.py enp3s0 h1_camera.yaml
 
 ```text
 raw uint16 (mm)  →  meters (×depth_scale)
+                  →  resize 到 96×128 full frame
+                  →  按 [32,32,32,0] 裁出 64×64 ROI，与训练 `depth.resized` 一致
                   →  无效值 (==0) 视为远端 (= far_clip)
-                  →  底部居中裁剪到 48×64，与训练 `depth.resized` 一致
                   →  clip 到 [0, 2] m
                   →  归一化到 [-0.5, 0.5]
 ```
@@ -235,12 +240,11 @@ leg_joint2motor_idx: [7, 3, 4, 5, 10,  8, 0, 1, 2, 11]
 | `control.stiffness` | hip_yaw/roll/pitch=150, knee=200, ankle=40 | `kps: [150, 150, 150, 200, 40, ...]` |
 | `control.damping`   | hip_yaw/roll/pitch=2, knee=4, ankle=2 | `kds: [2, 2, 2, 4, 2, ...]` |
 | `decimation` | 4 (sim_dt 5 ms) | mujoco: `simulation_dt=0.002, control_decimation=10` (=20 ms) |
-| `depth.buffer_len` | 3 | `depth_buffer_len: 3` |
+| `depth.buffer_len` | 10 | `depth_buffer_len: 10` |
 | `depth.update_interval` | 5 (= 100 ms @ 50 Hz) | `cam_update_interval: 5` |
 | `depth.near_clip / far_clip` | 0 / 2 m | `depth_near_clip / depth_far_clip` |
-| `depth.original / resized` | (480, 640) / (48, 64) | RealSense / MuJoCo 先保留全帧，再底部居中裁剪到 48×64 |
-| `depth.intrinsics` | `fx=fy=384.77294921875`, `cx=324.17236328125`, `cy=236.48226928710938` | RealSense 640×480 深度流内参；训练 Warp ray 显式使用该矩阵 |
-| `depth.fovy_range` | [58, 58] 兼容字段 | H1 Warp 不再由 FOV 推导 ray；MuJoCo XML 仍保留相机 `fovy` |
+| `depth.original / resized` | (96, 128) / (64, 64) | RealSense / MuJoCo: 480×640 → resize 96×128 → crop [32,32,32,0] → 64×64 |
+| `depth.fovy_range` | [79.3, 79.3] | 训练 Warp FOV 路径；部署侧通过 480×640 → 96×128 → ROI 对齐 |
 | `depth.position` | (0.10848, 0.01750, 0.69317) torso 系 | MuJoCo `<camera pos=...>`；实机机械对位 |
 | `depth.y_angle` | [50.8, 50.8]° | MuJoCo: `euler="0 -0.886627 0"`；实机俯仰 |
 
@@ -256,8 +260,8 @@ leg_joint2motor_idx: [7, 3, 4, 5, 10,  8, 0, 1, 2, 11]
 - **深度图异常**
   - 用 `cv2.imshow(..., depth_buffer[0, -1] + 0.5)` 在 mujoco 端先确认渲染是“前下方”；
     实机端可以临时把 `RealSenseDepth.read()` 的内容存图调试。
-  - 若 RealSense 与训练 FOV 仍有偏差，优先机械对位；必要时再在 `_loop` 中
-    调整 `depth_crop_bottom_margin`；默认是 **640×480 全帧 → 底部居中 48×64 (H×W) 裁剪**，不做缩放。
+  - 若 RealSense 与训练 FOV 仍有偏差，优先机械对位；必要时再调整
+    `depth_crop_pixels`；默认是 **480×640 → 96×128 → 中心靠下 64×64 (H×W) ROI**。
 - **JIT 加载报错**
   - 该 PT 是 `torch.jit.script` 导出，需要 PyTorch 版本 ≥ 2.0；建议与训练侧
     `rsl_rl` 所依赖的版本保持一致。

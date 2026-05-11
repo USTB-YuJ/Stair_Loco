@@ -60,9 +60,10 @@ obs_history_len: 10
 # ---- depth camera (RealSense D435i recommended) ----
 depth_near_clip: 0.0
 depth_far_clip:  2.0
-depth_buffer_len: 3            # policy slices [:, :2]
-depth_size: [48, 64]          # H, W bottom-center crop fed to the policy
-depth_crop_bottom_margin: 0   # 0 = crop touches the bottom edge
+depth_buffer_len: 10           # full stack fed to the policy
+depth_full_size: [96, 128]    # H, W intermediate frame matching training
+depth_crop_pixels: [32, 32, 32, 0]  # left, top, right, bottom on depth_full_size
+depth_size: [64, 64]          # H, W ROI fed to the policy
 cam_update_interval: 5         # 5 control steps @ 50 Hz -> 10 Hz depth refresh
 realsense_input_size: [480, 640]   # H, W of the raw RealSense depth stream
 realsense_fps: 30

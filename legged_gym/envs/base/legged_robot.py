@@ -17,6 +17,7 @@ from legged_gym.utils.math import quat_apply_yaw, wrap_to_pi
 from legged_gym.utils.isaacgym_utils import get_euler_xyz as get_euler_xyz_in_tensor
 from legged_gym.utils.helpers import class_to_dict
 from legged_gym.utils.warp_render_v3 import DepthRendererWarp, depth_image_preprocessing
+from legged_gym.utils.depth_roi import crop_window_from_pixels
 from .legged_robot_config import LeggedRobotCfg
 import torch.nn.functional as F
 import random
@@ -128,6 +129,34 @@ class LeggedRobot(BaseTask):
         depth_image = self.normalize_depth_image(depth_image)
         return depth_image
 
+    def _crop_and_resize_depth_images(self, depth_images):
+        """Apply configured ROI crop and return tensors shaped like cfg.depth.resized."""
+        if self.cfg.depth.crop_depth:
+            crop_top, crop_bottom, crop_left, crop_right = crop_window_from_pixels(
+                depth_images.shape[-2:], self.cfg.depth.crop_pixels
+            )
+            depth_images = depth_images[..., crop_top:crop_bottom, crop_left:crop_right]
+
+        target_size = tuple(self.cfg.depth.resized)
+        if tuple(depth_images.shape[-2:]) == target_size:
+            return depth_images.contiguous()
+
+        if depth_images.dim() == 2:
+            return F.interpolate(
+                depth_images.unsqueeze(0).unsqueeze(0),
+                size=target_size,
+                mode='bilinear',
+                align_corners=False,
+            ).squeeze(0).squeeze(0)
+        if depth_images.dim() == 3:
+            return F.interpolate(
+                depth_images.unsqueeze(1),
+                size=target_size,
+                mode='bilinear',
+                align_corners=False,
+            ).squeeze(1)
+        raise ValueError(f"Unsupported depth tensor shape: {tuple(depth_images.shape)}")
+
     def update_depth_buffer(self):
         if not self.cfg.depth.use_camera:
             return
@@ -148,10 +177,7 @@ class LeggedRobot(BaseTask):
             depth_image = gymtorch.wrap_tensor(depth_image_)
             depth_image = self.process_depth_image(depth_image, i)
 
-            # crop depth images
-            if self.cfg.depth.crop_depth:
-                crop_left, crop_top, crop_right, crop_bottom = self.cfg.depth.crop_pixels
-                depth_image = F.interpolate(depth_image[crop_top:-crop_bottom, crop_left:self.cfg.depth.original[1]-crop_right].unsqueeze(0).unsqueeze(0), size=self.cfg.depth.original, mode='bilinear', align_corners=False).squeeze(0).squeeze(0)
+            depth_image = self._crop_and_resize_depth_images(depth_image)
 
             init_flag = self.episode_length_buf <= 1
 
@@ -193,10 +219,9 @@ class LeggedRobot(BaseTask):
             sigma = float(np.random.rand(1) * self.cfg.depth.gaussian_filter_sigma)
             depth_images = adaptive_gaussian_filter(depth_images.cpu().numpy(), self.device, kernel, sigma)
 
-        # crop depth images
-        if self.cfg.depth.crop_depth:
-            crop_left, crop_top, crop_right, crop_bottom = self.cfg.depth.crop_pixels
-            depth_images = F.interpolate(depth_images[:, crop_top:-crop_bottom, crop_left:self.cfg.depth.original[1]-crop_right].unsqueeze(1), size=self.cfg.depth.original, mode='bilinear', align_corners=False).squeeze(1)
+        # save pre-crop depth for visualization
+        self._raw_warp_depth = depth_images.clone()
+        depth_images = self._crop_and_resize_depth_images(depth_images)
 
         init_flag = self.episode_length_buf <= 1
 
@@ -242,7 +267,7 @@ class LeggedRobot(BaseTask):
         self.last_actions[:] = self.actions[:]
         self.last_dof_vel[:] = self.dof_vel[:]
         self.last_root_vel[:] = self.root_states[:, 7:13]
-        self.last_base_lin_vel[:] = self.self.base_lin_vel[:]
+        self.last_base_lin_vel[:] = self.base_lin_vel[:]
 
 
     def check_termination(self):
@@ -830,6 +855,7 @@ class LeggedRobot(BaseTask):
                                             self.cfg.depth.buffer_len,
                                             self.cfg.depth.resized[0],
                                             self.cfg.depth.resized[1]).to(self.device)
+            self._raw_warp_depth = None  # pre-crop depth for visualization
 
     def compute_randomized_gains(self, num_envs):
         p_mult = torch_rand_float(self.cfg.domain_rand.stiffness_multiplier_range[0], self.cfg.domain_rand.stiffness_multiplier_range[1],

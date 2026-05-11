@@ -38,7 +38,7 @@
 actions = policy(obs, history, depth)
 # obs:     Tensor[1, 39]       - 当前帧本体感知
 # history: Tensor[1, 10, 39]   - 过去 10 帧本体感知
-# depth:   Tensor[1, 2, 48, 64]- 2 帧深度图（3 帧 buffer 的前 2 帧）
+# depth:   Tensor[1, D, 64, 64]- D 帧深度 ROI 堆叠（D=depth_buffer_len）
 # actions: Tensor[1, 10]       - 10 个腿关节动作增量
 ```
 
@@ -82,7 +82,9 @@ actions = policy(obs, history, depth)
 ### 关键设计
 
 - **深度归一化**与训练侧一致：`d_norm = clip(d, 0, 2) / 2 - 0.5`，范围 `[-0.5, 0.5]`。
-- **深度 buffer** 长度 3，策略只用 `[:, :2]`（最老 2 帧），模拟 100-200 ms 延迟。
+- **深度 buffer** 长度 10，策略使用完整堆叠（约 1s 历史）。
+- **深度 ROI**：训练侧 full frame 为 96×128，按 `[32,32,32,0]`
+  裁出中心靠下 64×64；部署侧先把 480×640 resize 到 96×128，再裁同一 ROI。
 - **`trajectory_history`**：长度 10 的滚动窗口，每控制步更新。
 - **MuJoCo 渲染**需要 `rot90(k=1)` 修正朝向（见下文第 4 节）。
 - 实机使用 `RealSenseDepth` 后台线程抓帧 + 归一化，支持 `depth_rot90_k` 配置。
@@ -305,21 +307,20 @@ env 1 depth max-abs change after moving env 0 body in front of env 1's camera:
 
 ### 7.1 内参
 
-- **显式内参矩阵**（2026-04-27 更新后当前实现）：H1 Warp renderer 不再由 `fovy_range` 推导 ray，而是使用 RealSense 640x480 pinhole 内参 `fx=fy=384.77294921875`、`cx=324.17236328125`、`cy=236.48226928710938`。
-- **等效视场**：这组内参约等价于 HFOV 79.5°、VFOV 63.9°；`fovy_range=[58,58]` 仅保留作兼容/文档字段，不再驱动 H1 Warp ray。
-- **分辨率**：采集/渲染保持 RealSense 全帧 `(480, 640)`（H×W），策略输入为底部居中直接裁剪出的 `(48, 64)`（H×W）；部署侧不再使用 `cv2.resize` 下采样。
+- **当前实现**：H1 Warp renderer 仍使用 FOV 方式生成射线；本轮仅改变射线数量与 ROI，外参保持不变。
+- **分辨率 / ROI**：训练侧 full frame 为 `(96, 128)`（H×W），策略输入为按 `crop_pixels=[32,32,32,0]` 裁出的 `(64, 64)`（H×W）。部署侧使用 `480×640 → resize 96×128 → crop 64×64` 的同一流程。
 - 渲染输出是**平面深度** (Z-depth)，不是 range distance。
 
 #### 与真机对照（当前实现）
 
 | 参数 | 训练 | RealSense D435i |
 |---|---|---|
-| 内参 | `fx=fy=384.77294921875`, `cx=324.17236328125`, `cy=236.48226928710938` | 640x480 depth profile 应校验到同一组或等价值 |
-| 等效 FOV | HFOV ≈79.5°，VFOV ≈63.9° | 由实机 profile 内参决定 |
-| 纵横比 | 全帧 4:3，策略输入 48×64 crop | 4:3（640×480） |
+| 视场 | `fovy_range=[79.3,79.3]` 的 Warp FOV 路径 | RealSense 480×640 先 resize 到训练 full frame |
+| ROI | 96×128 full frame → crop [32,32,32,0] → 64×64 | 480×640 → resize 96×128 → 同一 crop → 64×64 |
+| 纵横比 | full frame 4:3，策略输入 64×64 ROI | 原始 4:3，处理后同训练 |
 | near/far | 0 / 2 m | 部署侧 clip 到 0 / 2 m |
 
-**Checkpoint**：CNN 末端 **3×5** → `nn.Linear(64×3×5, 128)`；与旧 64×64 权重不兼容，需重新训练。
+**Checkpoint**：空间输入仍为 64×64，CNN 结构可沿用；但 ROI / 深度分布已变化，旧 checkpoint 不应作为最终策略继续使用，需重新训练。
 
 ### 7.2 外参
 
@@ -338,13 +339,11 @@ env 1 depth max-abs change after moving env 0 body in front of env 1's camera:
 #### 对齐机制
 
 1. `warp_update_depth_buffer()` 每 5 个控制步才真正渲染，新帧 append 到
-   `warp_depth_buffer`（shape `[B, 3, 48, 64]`）的末尾，最老帧被挤掉。
+  `warp_depth_buffer`（shape `[B, 10, 64, 64]`）的末尾，最老帧被挤掉。
 2. `env.step()` 返回的 `extras["depth"]` 在**深度刷新步**是 buffer 的引用，
    其余步是 `None`。但 runner 持有上一次的引用，所以**每个控制步都用一份有效 depth**。
-3. 策略 `actor_critic.act(obs, history, depth[:, :2, ...])` 只用 buffer
-   的**前 2 帧**（最老 2 帧），故意丢弃最新帧。
-4. 等效地：策略看到的深度**永远比当前状态延迟 100-200 ms**。
-   这是人为设计，模拟真机 RealSense 的 pipeline 延迟。
+3. 策略 `actor_critic.act(obs, history, depth)` 使用完整 buffer 堆叠。
+4. 等效地：策略输入覆盖最近约 1s 深度历史，包含最新帧。
 
 #### 时间线
 
@@ -354,10 +353,9 @@ control step:  0    1    2    3    4    5    6    7    8    9   10
 50 Hz policy:  P    P    P    P    P    P    P    P    P    P    P
 10 Hz depth:   D                        D                        D
                │                        │
-           buffer=[f0,f1,f2]      buffer=[f1,f2,f3]
-           policy sees [:,:2]     policy sees [:,:2]
-             = [f0, f1]            = [f1, f2]
-              (200ms, 100ms ago)    (200ms, 100ms ago)
+           buffer=[f0,..,f9]       buffer=[f1,..,f10]
+           policy sees full stack  policy sees full stack
+             = [f0..f9]             = [f1..f10]
 ```
 
 #### 注意事项
@@ -454,8 +452,8 @@ python legged_gym/scripts/train.py
 
 ### 高优先级
 
-- [ ] **按新内参/全帧噪声流程重新训练并导出策略**：旧 policy 仍来自旧深度分布，重训后再同步 MuJoCo/实机 `policy_path`。
-- [ ] **部署侧相机参数对齐**：MuJoCo 需要和训练内参的等效视场对齐；实机启动时应读取 RealSense profile 内参并和训练矩阵做日志/阈值校验。
+- [ ] **按 96×128 full frame + 64×64 ROI 流程重新训练并导出策略**：旧 policy 仍来自旧深度分布，重训后再同步 MuJoCo/实机 `policy_path`。
+- [ ] **部署侧相机参数对齐**：MuJoCo / RealSense 均使用 `480×640 → 96×128 → crop [32,32,32,0] → 64×64`，实机需验证机械外参和图像朝向。
 - [ ] **自遮挡策略路线确认**：当前 H1 训练仍关闭 self-occlusion；如后续重训包含自遮挡，再把 MuJoCo `hide_robot_in_depth` 切到 `false`。
 
 ### 中优先级
@@ -475,9 +473,9 @@ python legged_gym/scripts/train.py
 
 ---
 
-## 14. 2026-04-27 更新：480x640 全帧 + 底部居中裁剪
+## 14. 2026-04-27 历史记录：480x640 全帧 + 底部居中裁剪（已被 2026-05-11 ROI 流程替代）
 
-当前训练与部署的深度输入逻辑已改为：相机按 RealSense 深度流尺寸采集/渲染 **480x640 (H, W)** 全帧，再直接取底部居中的 **48x64 (H, W)** 裁剪输入策略网络；不再使用 resize 下采样。
+当时的训练与部署深度输入逻辑为：相机按 RealSense 深度流尺寸采集/渲染 **480x640 (H, W)** 全帧，再直接取底部居中的 **48x64 (H, W)** 裁剪输入策略网络；不再使用 resize 下采样。当前已改为第 15 节的 **96×128 full frame + 64×64 ROI**。
 
 裁剪窗口为默认 `bottom_margin=0`：rows `[432:480]`、cols `[288:352]`。如果真机安装或视野需要微调，只改部署/训练配置里的 `depth_crop_bottom_margin`，保持训练和部署一致。
 
@@ -489,18 +487,8 @@ H1 相机外参和内参随机化也同步收紧：`camera_parent_body="torso_li
 
 ---
 
-## 15. 2026-04-27 更新：Warp 显式内参与全帧噪声后裁剪
+## 15. 2026-05-11 更新：96×128 full frame 与 64×64 ROI
 
-这次修复关闭了 Warp depth renderer 里旧的 `fovy_dist_offset = 1 / tan(fovy/2) - 1` 射线生成路径。旧公式把横纵方向都间接绑到 FOV 偏移，在 480x640 这种非正方形全帧下会让实际 VFOV/HFOV 偏离 D435i 标定值。
+H1 训练侧深度处理统一为：先 render 得到 `(B,96,128)` full frame，在完整图上加 per-pixel Gaussian noise、per-env distance bias、clip/normalize、可选 Gaussian filter，然后按 `crop_pixels=[32,32,32,0]` 取中心靠下 `(B,64,64)` ROI 写入 depth buffer。
 
-H1 训练现在显式使用 RealSense 深度流 640x480 内参矩阵：
-
-```text
-[[384.77294921875, 0.0, 324.17236328125],
- [0.0, 384.77294921875, 236.48226928710938],
- [0.0, 0.0, 1.0]]
-```
-
-Warp 每个像素 `(u, v)` 的相机系 ray 改为 pinhole 形式：`normalize([1, -(u-cx)/fx, -(v-cy)/fy])`，平面深度仍沿用现有的 `d_fwd = rd_cam[0]` 写法。`fovy_range=[58,58]` 现在只保留作兼容/文档字段，不再驱动 H1 Warp ray。
-
-训练侧深度处理顺序也改成全帧优先：先 render 得到 `(B,480,640)`，在完整图上加 per-pixel Gaussian noise、per-env distance bias、clip/normalize，再用 replicate padding 做 Gaussian filter，最后才取底部居中裁剪 `(B,48,64)` 写入 depth buffer。默认裁剪窗口保持 rows `[432:480]`、cols `[288:352]`。
+部署侧采用同一几何语义：MuJoCo / RealSense 的原始 `480×640` 深度先 resize 到 `96×128`，再按同一 `crop_pixels` 裁出 `64×64`，保证训练与部署输入模型的 ROI 一致。

@@ -402,7 +402,7 @@ class H1_Loco_Robot(LeggedRobot):
         for i in range(len(self.feet_indices)):
             footpos_in_body_frame[:, i, :] = quat_rotate_inverse(self.base_quat, cur_footpos_translated[:, i, :])
         rew = (footpos_in_body_frame[:, 0, 1] - footpos_in_body_frame[:, 1, 1]) - self.cfg.rewards.feet_min_lateral_distance_target
-        return rew
+        return torch.clip(rew, max=0.1)
 
     def _reward_feet_slippage(self):
         return torch.sum(
@@ -455,7 +455,7 @@ class H1_Loco_Robot(LeggedRobot):
         feet_at_edge = torch.sum(feet_at_edge, dim=-1) >= 3
         feet_at_edge = self.contact_filt & feet_at_edge
         rew = (self.terrain_levels > 3) * torch.sum(feet_at_edge, dim=1)
-        return rew
+        return torch.clip(rew, max=0.1)
 
     def _reward_y_offset_pen(self):
         return torch.abs(self.root_states[:, 1] - self.origin_y) * torch.logical_and(self.env_class != 0, self.env_class != 1)

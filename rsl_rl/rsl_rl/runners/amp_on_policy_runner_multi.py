@@ -81,12 +81,15 @@ class AMPOnPolicyRunnerMulti:
             num_critic_obs = self.env.num_obs
         num_actor_obs = self.env.num_obs
         actor_critic_class = eval(self.cfg["policy_class_name"]) # ActorCritic
+        actor_critic_kwargs = dict(self.policy_cfg)
+        if self.use_depth and actor_critic_class.__name__ == "ActorCriticDepth":
+            actor_critic_kwargs["depth_buffer_len"] = self.env.cfg.depth.buffer_len
         actor_critic: ActorCritic = actor_critic_class( num_actor_obs=num_actor_obs,
                                                         num_critic_obs=num_critic_obs,
                                                         num_actions=self.env.num_actions,
                                                         history_dim=self.obs_history_len * (num_actor_obs),
                                                         # history_dim=self.obs_history_len * num_actor_obs,
-                                                        **self.policy_cfg).to(self.device)
+                                                        **actor_critic_kwargs).to(self.device)
         # prepare for AMP
         if self.use_amp:
             self.amp_loader_type = self.alg_cfg['amp_loader_type']
@@ -294,19 +297,13 @@ class AMPOnPolicyRunnerMulti:
 
         self.writer.add_scalar('Loss/value_function', locs['mean_value_loss'], locs['it'])
         self.writer.add_scalar('Loss/surrogate', locs['mean_surrogate_loss'], locs['it'])
-        self.writer.add_scalar('Loss/AMP', locs['mean_amp_loss'], locs['it'])
-        self.writer.add_scalar('Loss/AMP_grad', locs['mean_grad_pen_loss'], locs['it'])
         self.writer.add_scalar('Loss/learning_rate', self.alg.policy_learning_rate, locs['it'])
-        self.writer.add_scalar('Disc/agent_acc', locs['mean_agent_acc'], locs['it'])
-        self.writer.add_scalar('Disc/demo_acc', locs['mean_demo_acc'], locs['it'])
         self.writer.add_scalar('Policy/mean_noise_std', mean_std.item(), locs['it'])
         self.writer.add_scalar('Perf/total_fps', fps, locs['it'])
         self.writer.add_scalar('Perf/collection time', locs['collection_time'], locs['it'])
         self.writer.add_scalar('Perf/learning_time', locs['learn_time'], locs['it'])
         if len(locs['rewbuffer']) > 0:
             self.writer.add_scalar('Train/mean_reward', statistics.mean(locs['rewbuffer']), locs['it'])
-            self.writer.add_scalar('Train/mean_disc_reward', statistics.mean(locs['discrewbuffer']), locs['it'])
-            self.writer.add_scalar('Train/mean_step_disc_reward', statistics.mean(locs['step_discrewbuffer']), locs['it'])
             self.writer.add_scalar('Train/mean_episode_length', statistics.mean(locs['lenbuffer']), locs['it'])
 
         str = f" \033[1m Learning iteration {locs['it']}/{self.current_learning_iteration + locs['num_learning_iterations']} \033[0m "
@@ -318,16 +315,8 @@ class AMPOnPolicyRunnerMulti:
                             'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
                           f"""{'Value function loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
                           f"""{'Surrogate loss:':>{pad}} {locs['mean_surrogate_loss']:.4f}\n"""
-                          f"""{'AMP loss:':>{pad}} {locs['mean_amp_loss']:.4f}\n"""
-                          f"""{'AMP grad pen loss:':>{pad}} {locs['mean_grad_pen_loss']:.4f}\n"""
-                          f"""{'AMP mean policy pred:':>{pad}} {locs['mean_policy_pred']:.4f}\n"""
-                          f"""{'AMP mean expert pred:':>{pad}} {locs['mean_expert_pred']:.4f}\n"""
-                          f"""{'AMP mean policy acc:':>{pad}} {locs['mean_agent_acc']:.4f}\n"""
-                          f"""{'AMP mean demo acc:':>{pad}} {locs['mean_demo_acc']:.4f}\n"""
                           f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
                           f"""{'Mean reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
-                          f"""{'Mean disc reward:':>{pad}} {statistics.mean(locs['discrewbuffer']):.2f}\n"""
-                          f"""{'Step disc reward:':>{pad}} {statistics.mean(locs['step_discrewbuffer']):.2f}\n"""
                           f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n""")
         else:
             log_string = (f"""{'#' * width}\n"""

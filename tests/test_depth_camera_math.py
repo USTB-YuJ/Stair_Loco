@@ -1,4 +1,6 @@
 import math
+import importlib.util
+from pathlib import Path
 
 FX = 384.77294921875
 FY = 384.77294921875
@@ -8,6 +10,15 @@ FULL_H = 480
 FULL_W = 640
 CROP_H = 48
 CROP_W = 64
+
+
+def _load_depth_roi_module():
+    module_path = Path(__file__).resolve().parents[1] / "legged_gym" / "utils" / "depth_roi.py"
+    spec = importlib.util.spec_from_file_location("depth_roi_under_test", module_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
 
 def _warp_ray_direction(u, v):
@@ -20,6 +31,23 @@ def _bottom_center_crop_window(src_h, src_w, target_h, target_w, bottom_margin=0
     top = src_h - bottom_margin - target_h
     left = (src_w - target_w) // 2
     return top, top + target_h, left, left + target_w
+
+
+def test_h1_depth_roi_crop_window_handles_zero_bottom_crop():
+    depth_roi = _load_depth_roi_module()
+
+    assert depth_roi.crop_window_from_pixels((96, 128), [32, 32, 32, 0]) == (32, 96, 32, 96)
+
+
+def test_h1_depth_roi_crop_window_rejects_empty_crop():
+    depth_roi = _load_depth_roi_module()
+
+    try:
+        depth_roi.crop_window_from_pixels((96, 128), [64, 32, 64, 0])
+    except ValueError as exc:
+        assert "Invalid crop" in str(exc)
+    else:
+        raise AssertionError("Expected invalid full-width crop to raise ValueError")
 
 
 def test_warp_ray_uses_configured_pinhole_intrinsics():

@@ -8,8 +8,10 @@ The exported policy expects exactly three inputs:
     actions = policy(
         obs:     Tensor[1, 39],          # current proprio observation
         history: Tensor[1, 10, 39],      # last 10 proprio observations
-        depth:   Tensor[1, 2, 48, 64],   # 2-frame depth stack (H, W)
+        depth:   Tensor[1, D, 64, 64],   # D-frame depth ROI stack (H, W)
     ) -> Tensor[1, 10]                   # action mean for the 10 leg joints
+
+    where D = depth_buffer_len from the YAML config.
 
 The 39-dim observation layout matches `H1_Loco_Robot.compute_observations`:
     [0:3]   commands        * cmd_scale       ([vx, vy, wz])
@@ -21,11 +23,11 @@ The 39-dim observation layout matches `H1_Loco_Robot.compute_observations`:
 
 Depth preprocessing (matches `legged_robot.warp_update_depth_buffer`):
     1. Render depth in meters from the pelvis-mounted camera.
-    2. Clip to [near_clip, far_clip] = [0, 2] m.
-    3. Normalize to [-0.5, 0.5] via `(d - near) / (far - near) - 0.5`.
-    4. Push to a length-3 ring buffer.  Slice `[:, :2]` (the two oldest
-       frames of the 3-frame stack) when feeding the policy, exactly the
-       way `play.py` does at runtime.
+    2. Resize the full frame to 96x128 and crop [32,32,32,0] to 64x64.
+    3. Clip to [near_clip, far_clip] = [0, 2] m.
+    4. Normalize to [-0.5, 0.5] via `(d - near) / (far - near) - 0.5`.
+    5. Push to a length depth_buffer_len ring buffer and feed the full
+       stack to the policy, matching `play.py` at runtime.
 """
 
 import argparse
@@ -96,13 +98,26 @@ def crop_bottom_center(image, crop_size, bottom_margin=0):
     return image[top:top + crop_h, left:left + crop_w]
 
 
-def render_depth(renderer, data, cam_id, render_size, crop_size, near_clip, far_clip,
-                 scene_option=None, rot90_k=1, crop_bottom_margin=0):
-    """Render full-resolution depth, crop bottom-center, normalize to [-0.5, 0.5].
+def crop_by_pixels(image, crop_pixels):
+    crop_left, crop_top, crop_right, crop_bottom = [int(v) for v in crop_pixels]
+    src_h, src_w = image.shape[:2]
+    top = crop_top
+    bottom = src_h - crop_bottom
+    left = crop_left
+    right = src_w - crop_right
+    if top >= bottom or left >= right:
+        raise ValueError(
+            f"Invalid crop_pixels={crop_pixels} for source {src_h}x{src_w}."
+        )
+    return image[top:bottom, left:right]
 
-    ``render_size`` and ``crop_size`` are both (H, W). No resize is applied:
-    after the MuJoCo orientation correction, the frame must already match
-    ``render_size`` and the policy receives a literal crop of ``crop_size``.
+
+def render_depth(renderer, data, cam_id, render_size, full_size, crop_pixels,
+                 policy_size, near_clip, far_clip, scene_option=None, rot90_k=1):
+    """Render depth, resize to training full-frame, crop ROI, normalize.
+
+    Sizes are (H, W). Deployment mirrors training by first forming a
+    ``full_size`` frame and then applying the configured pixel crop.
     """
     if scene_option is None:
         renderer.update_scene(data, camera=cam_id)
@@ -115,7 +130,19 @@ def render_depth(renderer, data, cam_id, render_size, crop_size, near_clip, far_
         raise RuntimeError(
             f"MuJoCo depth shape {raw.shape} does not match configured render_size {tuple(render_size)}."
         )
-    cropped = crop_bottom_center(raw, crop_size, bottom_margin=crop_bottom_margin)
+    if raw.shape != tuple(full_size):
+        raw = cv2.resize(
+            raw,
+            (int(full_size[1]), int(full_size[0])),
+            interpolation=cv2.INTER_AREA,
+        )
+    cropped = crop_by_pixels(raw, crop_pixels)
+    if cropped.shape != tuple(policy_size):
+        cropped = cv2.resize(
+            cropped,
+            (int(policy_size[1]), int(policy_size[0])),
+            interpolation=cv2.INTER_AREA,
+        )
     return normalize_depth(cropped, near_clip, far_clip)
 
 
@@ -159,7 +186,8 @@ def main():
     depth_buffer_len = int(cfg["depth_buffer_len"])
     depth_size = tuple(cfg["depth_size"])  # policy crop size (H, W)
     depth_render_size = tuple(cfg.get("depth_render_size", depth_size))  # full camera frame (H, W)
-    depth_crop_bottom_margin = int(cfg.get("depth_crop_bottom_margin", 0))
+    depth_full_size = tuple(cfg.get("depth_full_size", depth_render_size))
+    depth_crop_pixels = tuple(cfg.get("depth_crop_pixels", [0, 0, 0, 0]))
     depth_vfov = float(cfg.get("depth_vfov", 58.0))
     cam_update_interval = int(cfg["cam_update_interval"])
     cam_name = cfg.get("cam_name", "depth_cam")
@@ -177,7 +205,7 @@ def main():
 
     assert num_obs == 39, f"H1 loco policy expects num_obs=39, got {num_obs}"
     assert num_actions == 10, f"H1 loco policy expects num_actions=10, got {num_actions}"
-    assert depth_buffer_len >= 2, "buffer_len must be >= 2 to feed the policy"
+    assert depth_buffer_len >= 1, "buffer_len must be >= 1 to feed the policy"
 
     # ---- runtime buffers ----
     action = np.zeros(num_actions, dtype=np.float32)
@@ -280,11 +308,11 @@ def main():
                 # ---- depth update at lower rate ----
                 if cam_counter % cam_update_interval == 0:
                     depth_img = render_depth(
-                        depth_renderer, data, cam_id, depth_render_size, depth_size,
+                        depth_renderer, data, cam_id, depth_render_size,
+                        depth_full_size, depth_crop_pixels, depth_size,
                         depth_near_clip, depth_far_clip,
                         scene_option=depth_scene_option,
                         rot90_k=depth_rot90_k,
-                        crop_bottom_margin=depth_crop_bottom_margin,
                     )
                     depth_t = torch.from_numpy(depth_img).float()
                     if not depth_initialized:
@@ -301,9 +329,7 @@ def main():
                 cam_counter += 1
 
                 # ---- inference ----
-                # The exported policy slices the FIRST 2 of the 3-frame buffer
-                # (see play.py: `obs[1][:, :2, ...]`).
-                depth_in = depth_buffer[:, :2, ...]
+                depth_in = depth_buffer
                 with torch.no_grad():
                     action = policy(obs_tensor, trajectory_history, depth_in)
                 action = action.detach().cpu().numpy().squeeze(0).astype(np.float32)

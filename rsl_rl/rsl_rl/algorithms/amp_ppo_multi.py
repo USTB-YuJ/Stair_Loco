@@ -130,7 +130,7 @@ class AMPPPOMulti:
         # Compute the actions and values
         if isinstance(obs, tuple):
             aug_obs, depth_image, aug_critic_obs = obs[0].detach(), obs[1].detach(), critic_obs.detach()
-            self.transition.actions = self.actor_critic.act(aug_obs, history, depth_image[:, :2, ...]).detach()
+            self.transition.actions = self.actor_critic.act(aug_obs, history, depth_image).detach()
             self.transition.observations = obs[0]
             self.transition.depth_image = obs[1]
         else:
@@ -269,7 +269,7 @@ class AMPPPOMulti:
             aug_obs_batch, history_batch = obs_batch.detach(), history_batch.detach()
             if self.use_depth:
                 aug_depth_image_batch = depth_image_batch.detach()
-                self.actor_critic.act(aug_obs_batch, history_batch, aug_depth_image_batch[:, :2, ...])
+                self.actor_critic.act(aug_obs_batch, history_batch, aug_depth_image_batch)
             else:
                 self.actor_critic.act(obs_batch, history_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
             
