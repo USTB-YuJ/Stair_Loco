@@ -102,6 +102,38 @@ class StackDepthEncoder(nn.Module):
         depth_latent = self.mlp(depth_latent)
         return depth_latent
 
+class StackDepthEncoderGRU(nn.Module):
+    def __init__(self, base_backbone: DepthOnlyFCBackbone58x87,
+                 hidden_dim=128, num_layers=1, output_dim=128) -> None:
+        super().__init__()
+        activation = nn.ELU()
+        self.base_backbone = base_backbone
+        self.output_dim = output_dim
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+
+        self.gru = nn.GRU(
+            input_size=base_backbone.output_dim,
+            hidden_size=hidden_dim,
+            num_layers=num_layers,
+            batch_first=True,
+        )
+        self.mlp = nn.Sequential(
+            nn.Linear(hidden_dim + base_backbone.output_dim, output_dim),
+            activation,
+        )
+
+    def forward(self, depth_image):
+        # depth_image shape: [batch_size, num, 64, 64]
+        depth_latent = self.base_backbone(depth_image.flatten(0, 1))
+        depth_latent = depth_latent.reshape(depth_image.shape[0], depth_image.shape[1], -1)
+
+        _, hidden = self.gru(depth_latent)
+        history_feature = hidden[-1]
+        latest_feature = depth_latent[:, -1]
+        depth_feature = torch.cat([history_feature, latest_feature], dim=-1)
+        return self.mlp(depth_feature)
+
 class ActorCriticDepth(nn.Module):
     is_recurrent = False
     def __init__(self,  num_actor_obs,
@@ -113,7 +145,10 @@ class ActorCriticDepth(nn.Module):
                         his_latent_dim = 64 + 3,
                         history_dim = 570,
                         depth_buffer_len = 2,
+                        depth_encoder_type = "gru",
                         depth_temporal_channels = 64,
+                        depth_gru_hidden_dim = 128,
+                        depth_gru_num_layers = 1,
                         activation='elu',
                         init_noise_std=1.0,
                         max_grad_norm=10.0,
@@ -128,12 +163,22 @@ class ActorCriticDepth(nn.Module):
 
         # depth encoder
         depth_backbone = DepthOnlyFCBackbone58x87(output_dim=128, output_activation=activation)
-        self.depth_encoder = StackDepthEncoder(
-            depth_backbone,
-            buffer_len=depth_buffer_len,
-            temporal_channels=depth_temporal_channels,
-            output_dim=depth_backbone.output_dim,
-        )
+        if depth_encoder_type == "gru":
+            self.depth_encoder = StackDepthEncoderGRU(
+                depth_backbone,
+                hidden_dim=depth_gru_hidden_dim,
+                num_layers=depth_gru_num_layers,
+                output_dim=depth_backbone.output_dim,
+            )
+        elif depth_encoder_type == "conv_pool":
+            self.depth_encoder = StackDepthEncoder(
+                depth_backbone,
+                buffer_len=depth_buffer_len,
+                temporal_channels=depth_temporal_channels,
+                output_dim=depth_backbone.output_dim,
+            )
+        else:
+            raise ValueError(f"Unsupported depth_encoder_type: {depth_encoder_type}")
 
         mlp_input_dim_a = num_actor_obs + his_latent_dim + depth_backbone.output_dim
         mlp_input_dim_c = num_critic_obs + his_latent_dim

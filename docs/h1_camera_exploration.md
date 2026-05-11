@@ -492,3 +492,17 @@ H1 相机外参和内参随机化也同步收紧：`camera_parent_body="torso_li
 H1 训练侧深度处理统一为：先 render 得到 `(B,96,128)` full frame，在完整图上加 per-pixel Gaussian noise、per-env distance bias、clip/normalize、可选 Gaussian filter，然后按 `crop_pixels=[32,32,32,0]` 取中心靠下 `(B,64,64)` ROI 写入 depth buffer。
 
 部署侧采用同一几何语义：MuJoCo / RealSense 的原始 `480×640` 深度先 resize 到 `96×128`，再按同一 `crop_pixels` 裁出 `64×64`，保证训练与部署输入模型的 ROI 一致。
+
+## 16. 2026-05-11 更新：GRU 深度时序编码
+
+深度 encoder 的时序融合从 `temporal Conv1d + mean/max pooling` 改为 `shared CNN + GRU + latest-frame skip`：
+
+```text
+depth [B,10,64,64]
+  -> shared CNN per frame -> frame_feat [B,10,128]
+  -> GRU(last hidden) + latest frame feature
+  -> Linear(256,128) + ELU
+  -> depth_feature [B,128]
+```
+
+这样保留完整 10 帧顺序信息，同时显式把最新一帧特征拼进去，避免 GRU 压缩时丢掉当前深度的强信号。Actor 输入维度仍保持不变：`obs + history_feature + depth_feature`。

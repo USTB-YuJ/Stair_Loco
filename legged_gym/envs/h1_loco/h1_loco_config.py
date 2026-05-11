@@ -357,6 +357,9 @@ class H1_Loco_CfgPPO(LeggedRobotCfgPPO):
         actor_hidden_dims = [512, 256, 128]
         critic_hidden_dims = [512, 256, 128]
         his_latent_dim = 64
+        depth_encoder_type = "gru"
+        depth_gru_hidden_dim = 128
+        depth_gru_num_layers = 1
 
     class algorithm(LeggedRobotCfgPPO.algorithm):
         use_amp = False
