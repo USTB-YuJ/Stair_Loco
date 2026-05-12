@@ -165,6 +165,39 @@ def play(args):
             frame_path = os.path.join(record_dir, f'frame_{i:06d}.png')
             env.gym.write_viewer_image_to_file(env.viewer, frame_path)
 
+        # Noise stage visualization window
+        if env.cfg.depth.warp_camera and hasattr(env, '_depth_stage_raw'):
+            def _to_vis(t, scale=4):
+                arr = t[0].cpu().numpy().astype(np.float32)
+                mn, mx = arr.min(), arr.max()
+                if mx - mn > 1e-6:
+                    arr = ((arr - mn) / (mx - mn) * 255).astype(np.uint8)
+                else:
+                    arr = np.zeros_like(arr, dtype=np.uint8)
+                col = cv2.applyColorMap(arr, cv2.COLORMAP_INFERNO)
+                return cv2.resize(col, (col.shape[1]*scale, col.shape[0]*scale), interpolation=cv2.INTER_NEAREST)
+            stages = [
+                ("1.raw",        env._depth_stage_raw),
+                ("2.+gaussian",  env._depth_stage_gaussian),
+                ("3.+dis",       env._depth_stage_dis),
+                ("4.+edge",      env._depth_stage_edge),
+                ("5.+patch",     env._depth_stage_patch),
+                ("6.+discont",   env._depth_stage_discontinuity),
+                ("7.normalized", env._depth_stage_normalized),
+                ("8.+filter",    env._raw_warp_depth),
+                ("9.final",      env.warp_depth_buffer[:, -1:].squeeze(1)),
+            ]
+            panels = []
+            for label, t in stages:
+                p = _to_vis(t)
+                cv2.putText(p, label, (4, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255,255,255), 1)
+                panels.append(p)
+            # pad panels to same height before hstack
+            max_h = max(p.shape[0] for p in panels)
+            padded = [np.pad(p, ((0, max_h-p.shape[0]),(0,0),(0,0))) for p in panels]
+            cv2.imshow("Depth Noise Stages", np.hstack(padded))
+            cv2.waitKey(1)
+
         # Save depth image: full-res warp output + red box = region fed to policy when crop_depth True
         if save_depth_dir is not None and hasattr(env, '_raw_warp_depth') and env._raw_warp_depth is not None:
             raw_depth = env._raw_warp_depth[0].cpu().numpy()  # [H, W] for env 0 (same H,W as cfg.depth.original)
@@ -255,7 +288,7 @@ if __name__ == '__main__':
     EXPORT_POLICY = True
     args = get_args()
     args.task = "h1_loco"
-    args.load_run = "/root/gpufree-data/workspace/more/logs/h1_loco/May10_00-02-19_"
+    args.load_run = "/root/gpufree-data/workspace/more/logs/h1_loco/May11_11-17-59_"
     args.record = True
     args.headless = not args.record  # need viewer for recording
     args.save_depth = True

@@ -96,6 +96,16 @@ class LeggedRobotCfg(BaseConfig):
         gaussian_filter_sigma = 1.2
 
         random_cam_delay = False    # randomly select tow sequential frames in the depth buffer
+
+        edge_invalid_noise = False
+        edge_invalid_width = 2
+        random_invalid_patch = False
+        random_invalid_patch_num = 4
+        random_invalid_patch_size = 3
+
+        depth_discontinuity_noise = False
+        depth_discontinuity_thresh = 0.1  # meters
+        depth_discontinuity_dilate = 1    # dilation radius (pixels)
         # --------------------------------
 
         # ----- augmentation for deployment -----

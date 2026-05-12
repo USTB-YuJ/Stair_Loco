@@ -201,17 +201,64 @@ class LeggedRobot(BaseTask):
             base_quat=base_camera_quat,
         )
 
+        self._depth_stage_raw = depth_images.clone()
+
         # add noise to raw depth images
         if self.cfg.depth.gaussian_noise:
             depth_images += torch.randn((self.num_envs, *self.cfg.depth.original), device=self.device) * self.cfg.depth.gaussian_noise_std
+        self._depth_stage_gaussian = depth_images.clone()
+
         if self.cfg.depth.dis_noise != 0:
             depth_images += self.depth_dis_noise[..., None]
-            
+        self._depth_stage_dis = depth_images.clone()
+
+        if self.cfg.depth.edge_invalid_noise:
+            w = self.cfg.depth.edge_invalid_width
+            depth_images[:, :w, :] = 0.
+            depth_images[:, -w:, :] = 0.
+            depth_images[:, :, :w] = 0.
+            depth_images[:, :, -w:] = 0.
+        self._depth_stage_edge = depth_images.clone()
+
+        if self.cfg.depth.random_invalid_patch:
+            H, W = depth_images.shape[-2], depth_images.shape[-1]
+            for _ in range(self.cfg.depth.random_invalid_patch_num):
+                ph = torch.randint(1, self.cfg.depth.random_invalid_patch_size + 1, (1,)).item()
+                pw = torch.randint(1, self.cfg.depth.random_invalid_patch_size + 1, (1,)).item()
+                py = torch.randint(0, H - ph + 1, (1,)).item()
+                px = torch.randint(0, W - pw + 1, (1,)).item()
+                depth_images[:, py:py+ph, px:px+pw] = 0.
+        self._depth_stage_patch = depth_images.clone()
+
+        if self.cfg.depth.depth_discontinuity_noise:
+            # invalidate pixels near depth discontinuities (flying pixel artifact)
+            d = depth_images  # [B, H, W]
+            diff_h = torch.abs(d[:, 1:, :] - d[:, :-1, :])  # [B, H-1, W]
+            diff_w = torch.abs(d[:, :, 1:] - d[:, :, :-1])  # [B, H, W-1]
+            thresh = self.cfg.depth.depth_discontinuity_thresh
+            edge_h = torch.zeros_like(d, dtype=torch.bool)
+            edge_w = torch.zeros_like(d, dtype=torch.bool)
+            edge_h[:, 1:, :] |= diff_h > thresh
+            edge_h[:, :-1, :] |= diff_h > thresh
+            edge_w[:, :, 1:] |= diff_w > thresh
+            edge_w[:, :, :-1] |= diff_w > thresh
+            edge_mask = edge_h | edge_w
+            r = self.cfg.depth.depth_discontinuity_dilate
+            if r > 0:
+                import torch.nn.functional as _F
+                k = 2 * r + 1
+                edge_mask = _F.max_pool2d(
+                    edge_mask.float().unsqueeze(1), kernel_size=k, stride=1, padding=r
+                ).squeeze(1).bool()
+            depth_images[edge_mask] = 0.
+        self._depth_stage_discontinuity = depth_images.clone()
+
         # clip & normalize depth images
         depth_images = depth_image_preprocessing(depth_images, near_plane=self.cfg.depth.near_clip, far_plane=self.cfg.depth.far_clip, depth_scale=1.)
         depth_images = (depth_images - self.cfg.depth.near_clip) / (
             self.cfg.depth.far_clip - self.cfg.depth.near_clip
         ) - 0.5
+        self._depth_stage_normalized = depth_images.clone()
 
         # gaussian filter
         if self.cfg.depth.gaussian_filter:

@@ -162,16 +162,26 @@ class H1_Loco_Cfg(LeggedRobotCfg):
         y_pos_range = [-0.01, 0.01]
         z_pos_range = [-0.01, 0.01]
 
-        dis_noise = 0
+        dis_noise = 0.05
 
-        gaussian_noise = False
+        gaussian_noise = True
         gaussian_noise_std = 0.05
 
-        gaussian_filter = False
+        gaussian_filter = True
         gaussian_filter_kernel = [1, 3, 5]
         gaussian_filter_sigma = 1.2
 
         random_cam_delay = False
+
+        edge_invalid_noise = True
+        edge_invalid_width = 3
+        random_invalid_patch = True
+        random_invalid_patch_num = 4
+        random_invalid_patch_size = 3
+
+        depth_discontinuity_noise = True
+        depth_discontinuity_thresh = 0.3
+        depth_discontinuity_dilate = 0
 
         crop_depth = True
         crop_pixels = [32, 32, 32, 0]
