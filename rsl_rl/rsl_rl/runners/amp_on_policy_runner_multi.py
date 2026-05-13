@@ -220,8 +220,12 @@ class AMPOnPolicyRunnerMulti:
                             self.amp_obs_frames, rewards, normalizer=self.alg.amp_normalizer)
 
                         amp_obs = torch.clone(next_amp_obs)
+                        if self.use_depth and hasattr(self.env, 'warp_safety_heatmap_buffer'):
+                            self.alg.transition.gt_safety_heatmap = self.env.warp_safety_heatmap_buffer.clone().to(self.device)
                         self.alg.process_env_step(rewards, dones, infos, next_obs, next_critic_obs, self.amp_obs_frames)
                     else:
+                        if self.use_depth and hasattr(self.env, 'warp_safety_heatmap_buffer'):
+                            self.alg.transition.gt_safety_heatmap = self.env.warp_safety_heatmap_buffer.clone().to(self.device)
                         self.alg.process_env_step(rewards, dones, infos, next_obs, next_critic_obs)
 
                     # process trajectory history

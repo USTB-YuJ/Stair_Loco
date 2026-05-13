@@ -196,10 +196,20 @@ class LeggedRobot(BaseTask):
             return
 
         base_camera_quat = self.rigid_body_states.view(self.num_envs, self.num_bodies, -1)[:, 0, 3:7]
+        base_pos_w = self.rigid_body_states.view(self.num_envs, self.num_bodies, -1)[:, 0, :3]
         depth_images = self.warp_renderer.render_depth(
-            base_pos=self.rigid_body_states.view(self.num_envs, self.num_bodies, -1)[:, 0, :3],
+            base_pos=base_pos_w,
             base_quat=base_camera_quat,
         )
+        from pytorch3d import transforms as _t3d
+        _base_rot = _t3d.quaternion_to_matrix(
+            torch.cat([base_camera_quat[:, 3:], base_camera_quat[:, :3]], dim=1))
+        self._cam_rot_w = _base_rot
+        self._cam_pos_w = base_pos_w
+        # store full warp2cam for mask generation
+        from legged_gym.sensors.depth_camera import quat_pos_2_mat_torch
+        gym2robot = quat_pos_2_mat_torch(base_pos_w, base_camera_quat).to(self.device)
+        self._warp2cam = self.warp_renderer.warp2gym.unsqueeze(0).repeat([base_pos_w.shape[0],1,1]) @ gym2robot @ self.warp_renderer.robot2cam
 
         self._depth_stage_raw = depth_images.clone()
 
@@ -266,14 +276,22 @@ class LeggedRobot(BaseTask):
             sigma = float(np.random.rand(1) * self.cfg.depth.gaussian_filter_sigma)
             depth_images = adaptive_gaussian_filter(depth_images.cpu().numpy(), self.device, kernel, sigma)
 
+        depth_norm_full = depth_images
+
         # save pre-crop depth for visualization
-        self._raw_warp_depth = depth_images.clone()
-        depth_images = self._crop_and_resize_depth_images(depth_images)
+        self._raw_warp_depth = depth_norm_full.clone()
+        depth_images = self._crop_and_resize_depth_images(depth_norm_full)
 
         init_flag = self.episode_length_buf <= 1
 
         self.warp_depth_buffer = torch.cat([self.warp_depth_buffer[:, 1:], depth_images.unsqueeze(1)], dim=1)
         self.warp_depth_buffer[init_flag] = torch.stack([depth_images] * self.cfg.depth.buffer_len, dim=1)[init_flag]
+
+        # generate stair tread mask from normalized depth (GT, no noise)
+        safety_heatmap = self._generate_safety_heatmap(depth_norm_full)
+        safety_heatmap_resized = self._crop_and_resize_depth_images(safety_heatmap)
+        self.warp_safety_heatmap_buffer = torch.cat([self.warp_safety_heatmap_buffer[:, 1:], safety_heatmap_resized.unsqueeze(1)], dim=1)
+        self.warp_safety_heatmap_buffer[init_flag] = torch.stack([safety_heatmap_resized] * self.cfg.depth.buffer_len, dim=1)[init_flag]
 
 
     def post_physics_step(self):
@@ -903,6 +921,13 @@ class LeggedRobot(BaseTask):
                                             self.cfg.depth.resized[0],
                                             self.cfg.depth.resized[1]).to(self.device)
             self._raw_warp_depth = None  # pre-crop depth for visualization
+            self.warp_safety_heatmap_buffer = torch.zeros(self.num_envs,
+                                            self.cfg.depth.buffer_len,
+                                            self.cfg.depth.resized[0],
+                                            self.cfg.depth.resized[1]).to(self.device)
+            self._cam_rot_w = None
+            self._cam_pos_w = None
+            self._warp2cam = None
 
     def compute_randomized_gains(self, num_envs):
         p_mult = torch_rand_float(self.cfg.domain_rand.stiffness_multiplier_range[0], self.cfg.domain_rand.stiffness_multiplier_range[1],
@@ -967,6 +992,13 @@ class LeggedRobot(BaseTask):
         self.x_edge_mask = torch.tensor(self.terrain.x_edge_mask).view(self.terrain.tot_rows, self.terrain.tot_cols).to(self.device)
         self.stuck_mask = torch.tensor(self.terrain.stuck_mask).view(self.terrain.tot_rows, self.terrain.tot_cols).to(self.device)
         self.stair_pen_mask = torch.tensor(self.terrain.stair_pen_mask).view(2, self.terrain.tot_rows, self.terrain.tot_cols).to(self.device)
+
+        # Precompute flatness map from height field: exp(-local_var / sigma^2)
+        h = torch.tensor(self.terrain.height_field_raw, dtype=torch.float32, device=self.device) * self.terrain.cfg.vertical_scale
+        h_3d = h.unsqueeze(0).unsqueeze(0)
+        local_mean = F.avg_pool2d(h_3d, kernel_size=3, stride=1, padding=1)
+        local_var = F.avg_pool2d((h_3d - local_mean)**2, kernel_size=3, stride=1, padding=1)
+        self.flatness_map = torch.exp(-local_var.squeeze() / (0.02**2))
 
     def attach_camera(self, i, env_handle, actor_handle):
         if self.cfg.depth.use_camera:
@@ -1267,6 +1299,113 @@ class LeggedRobot(BaseTask):
                 sphere_geom, self.gym, self.viewer, self.envs[self.lookat_id], pose
             )
     
+    def _compute_edge_score(self, depth_images, sigma_edge=0.1):
+        sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]],
+                               dtype=depth_images.dtype, device=depth_images.device).view(1, 1, 3, 3)
+        sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]],
+                               dtype=depth_images.dtype, device=depth_images.device).view(1, 1, 3, 3)
+        grad_x = F.conv2d(depth_images.unsqueeze(1), sobel_x, padding=1)
+        grad_y = F.conv2d(depth_images.unsqueeze(1), sobel_y, padding=1)
+        grad_mag = torch.sqrt(grad_x**2 + grad_y**2 + 1e-8)
+        return torch.exp(-grad_mag**2 / sigma_edge**2).squeeze(1)
+
+    def _generate_safety_heatmap(self, depth_images):
+        """Binary stair-tread mask via backprojection + terrain height query.
+        depth_images: [B, H, W] normalized depth at original resolution (before crop).
+        """
+        print("[SAFETY_ENTRY] called, h_samples=%s warp2cam=%s depth_shape=%s" % (
+            str(self.height_samples is not None),
+            str(self._warp2cam is not None),
+            str(depth_images.shape)))
+        if self.height_samples is None or self._warp2cam is None:
+            return torch.zeros_like(depth_images)
+        B, H, W = depth_images.shape
+        # denormalize to meters
+        depth_m = (depth_images + 0.5) * (self.cfg.depth.far_clip - self.cfg.depth.near_clip) + self.cfg.depth.near_clip
+
+        # camera intrinsics from fovy (original resolution H x W)
+        fovy_offset = float(self.warp_renderer.fovy_dist_offset[0].item())
+        # fovy_dist_offset = 1/tan(fovy/2) - 1  =>  tan(fovy/2) = 1/(fovy_offset+1)
+        tan_half = 1.0 / (fovy_offset + 1.0)
+        # fy based on height (warp uses height as the reference axis)
+        fy = (H / 2.0) / tan_half
+        fx = fy
+        cx = W / 2.0
+        cy = H / 2.0
+
+        v, u = torch.meshgrid(torch.arange(H, device=self.device, dtype=torch.float32),
+                              torch.arange(W, device=self.device, dtype=torch.float32), indexing='ij')
+        z = depth_m  # [B, H, W]
+        x_c = (u - cx) / fx * z
+        y_c = (v - cy) / fy * z
+        # pts in camera frame (x-right, y-down, z-forward)
+        pts_cam = torch.stack([x_c, y_c, z], dim=-1)  # [B, H, W, 3]
+
+        # camera world pose: _warp2cam is cam->warp; warp2gym is gym->warp
+        # use inverse rotation to go warp->gym
+        warp2gym_R = self.warp_renderer.warp2gym[:3, :3]  # [3,3]
+        gym_from_warp_R = warp2gym_R.T
+        # camera position in gym world frame
+        cam_pos_warp = self._warp2cam[:, :3, 3]  # [B, 3]
+        cam_pos_world = (gym_from_warp_R @ cam_pos_warp.T).T  # [B, 3]
+        # camera rotation in gym world frame: R_world = R_gym_from_warp @ R_warp
+        cam_rot_warp = self._warp2cam[:, :3, :3]  # [B, 3, 3]
+        cam_rot_world = gym_from_warp_R.unsqueeze(0) @ cam_rot_warp  # [B, 3, 3]
+
+        # backproject: pts_world = R_cam_world @ pts_cam + cam_pos_world
+        # Note: warp camera frame is (x-forward, y-left, z-up) after warp2gym
+        # pts_cam here is in standard pinhole (x-right, y-down, z-forward)
+        # convert to warp camera frame: x_warp=z, y_warp=-x, z_warp=-y
+        pts_cam_warp = torch.stack([z, -x_c, -y_c], dim=-1)  # [B, H, W, 3]
+        pts_world = (cam_rot_world[:, None, None] @ pts_cam_warp.unsqueeze(-1)).squeeze(-1) \
+                    + cam_pos_world[:, None, None]
+
+        pts_xy = pts_world[..., :2].reshape(B * H * W, 2)
+        terrain_h = self._query_height_at_points(pts_xy).reshape(B, H, W)
+        terrain_nz = self._query_normal_z_at_points(pts_xy).reshape(B, H, W)
+        flatness = self._query_flatness_at_points(pts_xy).reshape(B, H, W)
+        height_diff = torch.abs(pts_world[..., 2] - terrain_h)
+
+        # edge score from depth image gradient
+        edge_score = self._compute_edge_score(depth_m)
+
+        # fuse 3 components into continuous safety heatmap
+        w1, w2, w3 = 0.4, 0.3, 0.3
+        safety = w1 * terrain_nz + w2 * flatness + w3 * edge_score
+
+        valid = (depth_m > 0) & (height_diff < 0.9)
+        safety = safety * valid.float()
+
+        return safety
+
+    def _query_height_at_points(self, points_xy):
+        px = (points_xy[:, 0] + self.terrain.cfg.border_size) / self.terrain.cfg.horizontal_scale
+        py = (points_xy[:, 1] + self.terrain.cfg.border_size) / self.terrain.cfg.horizontal_scale
+        px = torch.clip(px.long(), 0, self.height_samples.shape[0] - 2)
+        py = torch.clip(py.long(), 0, self.height_samples.shape[1] - 2)
+        h = (self.height_samples[px, py] + self.height_samples[px+1, py] +
+             self.height_samples[px, py+1] + self.height_samples[px+1, py+1]) / 4.0
+        return h * self.terrain.cfg.vertical_scale
+
+    def _query_normal_z_at_points(self, points_xy):
+        s = self.terrain.cfg.horizontal_scale
+        px = (points_xy[:, 0] + self.terrain.cfg.border_size) / s
+        py = (points_xy[:, 1] + self.terrain.cfg.border_size) / s
+        px = torch.clip(px.long(), 1, self.height_samples.shape[0] - 2)
+        py = torch.clip(py.long(), 1, self.height_samples.shape[1] - 2)
+        vs = self.terrain.cfg.vertical_scale
+        dz_dx = (self.height_samples[px+1, py] - self.height_samples[px-1, py]).float() * vs / (2 * s)
+        dz_dy = (self.height_samples[px, py+1] - self.height_samples[px, py-1]).float() * vs / (2 * s)
+        return 1.0 / torch.sqrt(1.0 + dz_dx**2 + dz_dy**2)
+
+    def _query_flatness_at_points(self, points_xy):
+        s = self.terrain.cfg.horizontal_scale
+        px = (points_xy[:, 0] + self.terrain.cfg.border_size) / s
+        py = (points_xy[:, 1] + self.terrain.cfg.border_size) / s
+        px = torch.clip(px.long(), 0, self.flatness_map.shape[0] - 2)
+        py = torch.clip(py.long(), 0, self.flatness_map.shape[1] - 2)
+        return self.flatness_map[px, py]
+
     def _get_base_heights(self, env_ids=None):
         """ Samples heights of the terrain at required points around each robot.
             The points are offset by the base's position and rotated by the base's yaw

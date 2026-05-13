@@ -65,12 +65,12 @@ class G1_16Dof_Loco_Cfg( LeggedRobotCfg ):
         num_rows = 10 # number of terrain rows (levels)  # spreaded is benifitiall !
         num_cols = 30 # number of terrain cols (types)
         
-        terrain_dict = {"roughness": 0.05, 
-                        "slope": 0.05,
-                        "pit": 0.05,
-                        "gap": 0.05,
+        terrain_dict = {"roughness": 0.0, 
+                        "slope": 0.0,
+                        "pit": 0.0,
+                        "gap": 0.0,
                         "stair": 0.05,
-                        "hurdle": 0.75,}
+                        "hurdle": 0.,}
         terrain_proportions = list(terrain_dict.values())
         
         # trimesh only:

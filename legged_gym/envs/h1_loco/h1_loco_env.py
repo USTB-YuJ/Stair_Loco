@@ -457,5 +457,13 @@ class H1_Loco_Robot(LeggedRobot):
         rew = (self.terrain_levels > 3) * torch.sum(feet_at_edge, dim=1)
         return torch.clip(rew, max=0.1)
 
+    def _reward_arm_joint_deviation(self):
+        # H1 has no dedicated arm joints; stub kept for config compatibility
+        return torch.zeros(self.num_envs, device=self.device)
+
+    def _reward_hip_joint_deviation(self):
+        # H1 hip roll/yaw deviation (indices 1,2 left; 6,7 right)
+        return torch.square(torch.norm(torch.abs(self.dof_pos[:, [1, 2, 6, 7]]), dim=1))
+
     def _reward_y_offset_pen(self):
         return torch.abs(self.root_states[:, 1] - self.origin_y) * torch.logical_and(self.env_class != 0, self.env_class != 1)

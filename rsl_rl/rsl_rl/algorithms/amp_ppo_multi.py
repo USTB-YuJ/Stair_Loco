@@ -64,12 +64,14 @@ class AMPPPOMulti:
                  use_amp=False,
                  use_depth=False,
                  default_pos=None,
+                 seg_loss_coef=0.1,
                  **kwargs
                  ):
         self.use_amp = use_amp
         self.amp_loader_type = amp_loader_type
         self.num_amp_frames = num_amp_frames
         self.use_depth = use_depth
+        self.seg_loss_coef = seg_loss_coef
         self.device = device
         if default_pos is not None: 
             self.default_pos = torch.tensor(default_pos, device=self.device)
@@ -264,7 +266,7 @@ class AMPPPOMulti:
                 mean_demo_acc += demo_acc.mean().item()
         
         for obs_batch, critic_obs_batch, actions_batch, next_obs_batch, next_critic_observations_batch, history_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, \
-            old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch, depth_image_batch, *_ in generator:
+            old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch, depth_image_batch, gt_safety_heatmap_batch, *_ in generator:
 
             aug_obs_batch, history_batch = obs_batch.detach(), history_batch.detach()
             if self.use_depth:
@@ -327,6 +329,15 @@ class AMPPPOMulti:
                 surrogate_loss +
                 self.value_loss_coef * value_loss -
                 self.entropy_coef * entropy_batch.mean())
+
+            if self.use_depth and gt_safety_heatmap_batch is not None and self.seg_loss_coef > 0:
+                import torch.nn.functional as _F
+                _, pred_masks = self.actor_critic.depth_encoder(aug_depth_image_batch)
+                seg_loss = _F.mse_loss(
+                    pred_masks.flatten(0, 1),
+                    gt_safety_heatmap_batch.flatten(0, 1).to(pred_masks.device)
+                )
+                loss = loss + self.seg_loss_coef * seg_loss
 
             # Gradient step
             self.optimizer.zero_grad()

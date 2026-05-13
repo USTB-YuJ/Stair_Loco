@@ -167,14 +167,21 @@ def play(args):
 
         # Noise stage visualization window
         if env.cfg.depth.warp_camera and hasattr(env, '_depth_stage_raw'):
-            def _to_vis(t, scale=4):
+            def _to_vis(t, scale=4, mode="inferno"):
                 arr = t[0].cpu().numpy().astype(np.float32)
-                mn, mx = arr.min(), arr.max()
-                if mx - mn > 1e-6:
-                    arr = ((arr - mn) / (mx - mn) * 255).astype(np.uint8)
+                if mode == "safety":
+                    arr = np.clip(arr, 0.0, 1.0)
+                    g = (arr * 255).astype(np.uint8)
+                    r = ((1.0 - arr) * 255).astype(np.uint8)
+                    b = np.zeros_like(g, dtype=np.uint8)
+                    col = np.stack([b, g, r], axis=-1)
                 else:
-                    arr = np.zeros_like(arr, dtype=np.uint8)
-                col = cv2.applyColorMap(arr, cv2.COLORMAP_INFERNO)
+                    mn, mx = arr.min(), arr.max()
+                    if mx - mn > 1e-6:
+                        arr = ((arr - mn) / (mx - mn) * 255).astype(np.uint8)
+                    else:
+                        arr = np.zeros_like(arr, dtype=np.uint8)
+                    col = cv2.applyColorMap(arr, cv2.COLORMAP_INFERNO)
                 return cv2.resize(col, (col.shape[1]*scale, col.shape[0]*scale), interpolation=cv2.INTER_NEAREST)
             stages = [
                 ("1.raw",        env._depth_stage_raw),
@@ -186,10 +193,22 @@ def play(args):
                 ("7.normalized", env._depth_stage_normalized),
                 ("8.+filter",    env._raw_warp_depth),
                 ("9.final",      env.warp_depth_buffer[:, -1:].squeeze(1)),
+                ("Safety",      env.warp_safety_heatmap_buffer[:, -1:].squeeze(1)),
             ]
+            # debug: first 5 steps only
+            import __main__ as _m
+            if not hasattr(_m, '_heatmap_checked'):
+                _m._heatmap_checked = True
+                _buf = env.warp_safety_heatmap_buffer[:, -1]
+                _d = env._depth_stage_normalized
+                print(f"[DEBUG] safety: min={_buf.min().item():.4f} max={_buf.max().item():.4f} mean={_buf.mean().item():.4f} nonzero={(_buf>1e-6).float().mean().item():.3f}")
+                print(f"[DEBUG] depth_norm: min={_d.min().item():.4f} max={_d.max().item():.4f} mean={_d.mean().item():.4f}")
+                _w2c = env._warp2cam if hasattr(env, '_warp2cam') else 'no_attr'
+                print(f"[DEBUG] _warp2cam: {_w2c is not None if hasattr(env,'_warp2cam') else 'NA'}, height_samples: {env.height_samples is not None}")
             panels = []
             for label, t in stages:
-                p = _to_vis(t)
+                mode = "safety" if label == "Safety" else "inferno"
+                p = _to_vis(t, mode=mode)
                 cv2.putText(p, label, (4, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255,255,255), 1)
                 panels.append(p)
             # pad panels to same height before hstack
@@ -287,9 +306,10 @@ def play(args):
 if __name__ == '__main__':
     EXPORT_POLICY = True
     args = get_args()
-    args.task = "h1_loco"
-    args.load_run = "/root/gpufree-data/workspace/more/logs/h1_loco/May11_11-17-59_"
+    # args.task = "h1_loco"
+    args.task = "g1_16dof_loco"
+    args.load_run = "/root/gpufree-data/workspace/more/logs/g1_16dof_loco/May12_17-23-46_"
     args.record = True
     args.headless = not args.record  # need viewer for recording
-    args.save_depth = True
+    args.save_depth = False
     play(args)

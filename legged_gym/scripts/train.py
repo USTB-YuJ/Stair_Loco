@@ -40,10 +40,10 @@ def train(args):
 
 if __name__ == '__main__':
     args = get_args()
-    args.task = "h1_loco"
-    # args.task = "g1_16dof_loco"
-    args.num_envs = 1024
-    args.headless = True
+    # args.task = "h1_loco"
+    args.task = "g1_16dof_loco"
+    args.num_envs = 10
+    args.headless = False
     args.max_iterations = 80000
     args.no_wandb = True
     # args.rl_device = "cuda:1"

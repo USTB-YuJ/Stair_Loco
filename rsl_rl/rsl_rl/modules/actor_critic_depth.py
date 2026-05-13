@@ -42,21 +42,19 @@ class DepthOnlyFCBackbone58x87(nn.Module):
         self.in_channels = in_channels
         self.output_dim = output_dim
         activation = nn.ELU()
-        self.image_compression = nn.Sequential(
-            # [1, 64, 64]
+        self.conv1 = nn.Sequential(
             nn.Conv2d(in_channels=in_channels, out_channels=32, kernel_size=8, stride=4), nn.ReLU(),
-            # [32, 15, 15]
-            # nn.Conv2d(in_channels=32, out_channels=64, kernel_size=4, stride=2), nn.ReLU(),
             nn.MaxPool2d(kernel_size=2, stride=2),
             activation,
-            # [32, 7, 7]
+        )
+        self.conv2 = nn.Sequential(
             nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, stride=1), nn.ReLU(),
-            # [64, 5, 5]
+        )
+        self.fc = nn.Sequential(
             nn.Flatten(),
-            # [64 * 5 * 5]
             nn.Linear(64 * 5 * 5, 128),
             activation,
-            nn.Linear(128, output_dim)
+            nn.Linear(128, output_dim),
         )
 
         if output_activation == "tanh":
@@ -65,10 +63,26 @@ class DepthOnlyFCBackbone58x87(nn.Module):
             self.output_activation = activation
 
     def forward(self, images: torch.Tensor):
-        images_compressed = self.image_compression(images.unsqueeze(1)) # [bs * 2, 1 64 64]
-        latent = self.output_activation(images_compressed)
+        x = self.conv1(images.unsqueeze(1))
+        conv_feat = self.conv2(x)  # [B, 64, 5, 5]
+        latent = self.output_activation(self.fc(conv_feat))
+        return latent, conv_feat
 
-        return latent
+class SegDecoder(nn.Module):
+    def __init__(self, in_channels=64, out_h=64, out_w=64):
+        super().__init__()
+        self.decoder = nn.Sequential(
+            nn.ConvTranspose2d(64, 32, 4, 2, 1),
+            nn.ReLU(),
+            nn.ConvTranspose2d(32, 16, 4, 2, 1),
+            nn.ReLU(),
+            nn.ConvTranspose2d(16, 1, 4, 2, 1),
+            nn.Upsample(size=(out_h, out_w), mode='bilinear', align_corners=False),
+            nn.Sigmoid(),
+        )
+    def forward(self, conv_feat):
+        return self.decoder(conv_feat).squeeze(1)  # [B, H, W]
+
 
 class StackDepthEncoder(nn.Module):
     def __init__(self, base_backbone: DepthOnlyFCBackbone58x87, buffer_len=None,
@@ -122,17 +136,28 @@ class StackDepthEncoderGRU(nn.Module):
             nn.Linear(hidden_dim + base_backbone.output_dim, output_dim),
             activation,
         )
+        self.seg_decoder = SegDecoder()
 
     def forward(self, depth_image):
         # depth_image shape: [batch_size, num, 64, 64]
-        depth_latent = self.base_backbone(depth_image.flatten(0, 1))
-        depth_latent = depth_latent.reshape(depth_image.shape[0], depth_image.shape[1], -1)
+        B, T = depth_image.shape[:2]
+        latents, conv_feats = [], []
+        for t in range(T):
+            lat, cf = self.base_backbone(depth_image[:, t])
+            latents.append(lat)
+            conv_feats.append(cf)
+        depth_latent = torch.stack(latents, dim=1)  # [B, T, 128]
+        conv_feats = torch.stack(conv_feats, dim=1)  # [B, T, 64, 5, 5]
 
         _, hidden = self.gru(depth_latent)
         history_feature = hidden[-1]
         latest_feature = depth_latent[:, -1]
-        depth_feature = torch.cat([history_feature, latest_feature], dim=-1)
-        return self.mlp(depth_feature)
+        depth_feature = self.mlp(torch.cat([history_feature, latest_feature], dim=-1))
+
+        pred_masks = self.seg_decoder(conv_feats.flatten(0, 1))  # [B*T, H, W]
+        H_m, W_m = pred_masks.shape[1], pred_masks.shape[2]
+        pred_masks = pred_masks.reshape(B, T, H_m, W_m)  # [B, T, H, W]
+        return depth_feature, pred_masks
 
 class ActorCriticDepth(nn.Module):
     is_recurrent = False
@@ -259,7 +284,7 @@ class ActorCriticDepth(nn.Module):
     def act(self, observations, history, depth, **kwargs):
         history = history.flatten(1)
         his_feature = self.history_encoder(history)
-        depth_feature = self.depth_encoder(depth)
+        depth_feature, self._last_pred_masks = self.depth_encoder(depth)
         actor_input = torch.cat((observations, his_feature, depth_feature), dim=-1)
         self.update_distribution(actor_input)
         return self.distribution.sample()
@@ -270,7 +295,7 @@ class ActorCriticDepth(nn.Module):
     def act_inference(self, observations, history, depth, **kwargs):
         history = history.flatten(1)
         his_feature = self.history_encoder(history)
-        depth_feature = self.depth_encoder(depth)
+        depth_feature, _ = self.depth_encoder(depth)
         actor_input = torch.cat((observations, his_feature, depth_feature), dim=-1)
         actions_mean = self.actor(actor_input)
         return actions_mean

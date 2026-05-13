@@ -181,8 +181,8 @@ class PolicyExporterDepth(torch.nn.Module):
     def forward(self, obs, history, depth):
         history = history.flatten(1)
         his_feature = self.history_encoder(history)
-        depth_feature = self.depth_encoder(depth)
-        actor_input = torch.cat((obs, his_feature, depth_feature), dim=-1)
+        depth_feature, _ = self.depth_encoder(depth)
+        actor_input = torch.cat([obs, his_feature, depth_feature], dim=-1)
         return self.actor(actor_input)
     
     def export(self, path):
