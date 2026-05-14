@@ -341,11 +341,17 @@ class AMPPPOMulti:
                     gt_safety_heatmap_batch.flatten(0, 1).to(pred_masks.device),
                     reduction='none'
                 )
-                if gt_body_mask_batch is not None:
-                    mask = gt_body_mask_batch.flatten(0, 1).to(pred_masks.device)
-                    seg_loss = (seg_loss * mask).sum() / mask.sum().clamp(min=1)
-                else:
-                    seg_loss = seg_loss.mean()
+                if not hasattr(self, '_seg_raw_printed'):
+                    self._seg_raw_printed = True
+                    print(f"[SEG_RAW] per_pixel_mse_mean={seg_loss.mean().item():.6f} shape={seg_loss.shape}")
+                seg_loss = seg_loss.mean()  # height_diff already filters body pixels
+                # store for tensorboard logging & visualization
+                self.last_seg_loss = seg_loss.item()
+                self._last_pred_heatmap = pred_masks.detach()
+                self._last_gt_heatmap = gt_safety_heatmap_batch.detach()
+                if not hasattr(self, '_seg_diag_printed'):
+                    self._seg_diag_printed = True
+                    print(f"[SEG_DIAG] pred_mean={pred_masks.mean().item():.4f} gt_mean={gt_safety_heatmap_batch.mean().item():.4f} seg_loss={seg_loss.item():.6f}")
                 loss = loss + self.seg_loss_coef * seg_loss
                 # store for tensorboard logging & visualization
                 self.last_seg_loss = seg_loss.item()

@@ -264,6 +264,12 @@ class LeggedRobot(BaseTask):
         terrain_h = self._query_height_at_points(pts_xy_flat).reshape(pts_world.shape[0], pts_world.shape[1], pts_world.shape[2])
         height_diff = torch.abs(pts_world[..., 2] - terrain_h)
         valid = (depth_safety_m > 0) & (height_diff < 0.15)
+        if not hasattr(self, '_valid_diag_printed'):
+            self._valid_diag_printed = True
+            vf = valid.float().mean().item()
+            hd = height_diff[valid].mean().item() if valid.any() else 0
+            sm = safety_heatmap[valid].mean().item() if valid.any() else 0
+            print(f"[GT_HEATMAP] valid_pixels={vf:.3f} mean_height_diff={hd:.4f}m mean_safety={sm:.4f}")
         safety_heatmap = safety_heatmap * valid.float()
 
 
