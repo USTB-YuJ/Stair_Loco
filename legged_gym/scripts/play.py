@@ -78,7 +78,7 @@ def play(args):
 
     env_cfg.env.test = True
 
-    env_cfg.depth.y_angle = [45, 45]
+    env_cfg.depth.y_angle = [48, 48]  # aligned with G1 config (was 70)
     env_cfg.depth.x_angle = [0, 0]
     env_cfg.depth.z_angle = [0, 0]
     env_cfg.depth.x_pos_range = [0, 0]
@@ -116,7 +116,7 @@ def play(args):
                                     "slope": 0.,
                                     "pit": 0,
                                     "gap": 0,
-                                    "stair": 1,}
+                                    "stair": 1}
     env_cfg.terrain.terrain_proportions = list(env_cfg.terrain.terrain_dict.values())
     # prepare environment
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
@@ -184,16 +184,17 @@ def play(args):
                     col = cv2.applyColorMap(arr, cv2.COLORMAP_INFERNO)
                 return cv2.resize(col, (col.shape[1]*scale, col.shape[0]*scale), interpolation=cv2.INTER_NEAREST)
             stages = [
-                ("1.raw",        env._depth_stage_raw),
-                ("2.+gaussian",  env._depth_stage_gaussian),
-                ("3.+dis",       env._depth_stage_dis),
-                ("4.+edge",      env._depth_stage_edge),
-                ("5.+patch",     env._depth_stage_patch),
-                ("6.+discont",   env._depth_stage_discontinuity),
-                ("7.normalized", env._depth_stage_normalized),
-                ("8.+filter",    env._raw_warp_depth),
-                ("9.final",      env.warp_depth_buffer[:, -1:].squeeze(1)),
+                # ("1.raw",        env._depth_stage_raw),
+                # ("2.+gaussian",  env._depth_stage_gaussian),
+                # ("3.+dis",       env._depth_stage_dis),
+                # ("4.+edge",      env._depth_stage_edge),
+                # ("5.+patch",     env._depth_stage_patch),
+                # ("6.+discont",   env._depth_stage_discontinuity),
+                # ("7.normalized", env._depth_stage_normalized),
+                # ("8.+filter",    env._raw_warp_depth),
+                # ("9.final",      env.warp_depth_buffer[:, -1:].squeeze(1)),
                 ("Safety",      env.warp_safety_heatmap_buffer[:, -1:].squeeze(1)),
+                ("Pred Safety", ppo_runner.alg.actor_critic._last_pred_masks[0:1, -1].detach() if hasattr(ppo_runner.alg.actor_critic, "_last_pred_masks") else torch.zeros(1, *env.cfg.depth.resized)),
             ]
             # debug: first 5 steps only
             import __main__ as _m
@@ -308,7 +309,7 @@ if __name__ == '__main__':
     args = get_args()
     # args.task = "h1_loco"
     args.task = "g1_16dof_loco"
-    args.load_run = "/root/gpufree-data/workspace/more/logs/g1_16dof_loco/May12_17-23-46_"
+    args.load_run = "/root/gpufree-data/workspace/more/logs/g1_16dof_loco/May13_16-48-39_"
     args.record = True
     args.headless = not args.record  # need viewer for recording
     args.save_depth = False

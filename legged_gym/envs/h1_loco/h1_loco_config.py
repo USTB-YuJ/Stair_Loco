@@ -144,6 +144,10 @@ class H1_Loco_Cfg(LeggedRobotCfg):
         warp_camera = True
         warp_device = "cuda:0"
 
+        enable_self_occlusion = True
+        robot_geom_module = "legged_gym.utils.h1_geom"
+        refit_stride = 1
+
         position = [0.0576235, 0.01753, 0.42987]
         original = (96, 128)
         resized = (64, 64)

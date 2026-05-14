@@ -62,6 +62,11 @@ class LeggedRobot(BaseTask):
         
         self.init_done = True
 
+    def render(self, sync_frame_time=True):
+        if self.viewer and getattr(self.cfg.terrain, "visualize_safety_map", False):
+            self._draw_terrain_safety_overlay()
+        return super().render(sync_frame_time=sync_frame_time)
+
     def step(self, actions):
         """ Apply actions, simulate, call self.post_physics_step()
 
@@ -197,6 +202,11 @@ class LeggedRobot(BaseTask):
 
         base_camera_quat = self.rigid_body_states.view(self.num_envs, self.num_bodies, -1)[:, 0, 3:7]
         base_pos_w = self.rigid_body_states.view(self.num_envs, self.num_bodies, -1)[:, 0, :3]
+
+        if self.cfg.depth.enable_self_occlusion and hasattr(self.warp_renderer, "update_robot_meshes"):
+            rb = self.rigid_body_states.view(self.num_envs, self.num_bodies, 13)
+            self.warp_renderer.update_robot_meshes(rb)
+
         depth_images = self.warp_renderer.render_depth(
             base_pos=base_pos_w,
             base_quat=base_camera_quat,
@@ -212,6 +222,50 @@ class LeggedRobot(BaseTask):
         self._warp2cam = self.warp_renderer.warp2gym.unsqueeze(0).repeat([base_pos_w.shape[0],1,1]) @ gym2robot @ self.warp_renderer.robot2cam
 
         self._depth_stage_raw = depth_images.clone()
+
+        # generate GT safety heatmap from depth via precomputed safety map
+        depth_safety = depth_images.clone()
+        depth_safety = depth_image_preprocessing(depth_safety, near_plane=self.cfg.depth.near_clip, far_plane=self.cfg.depth.far_clip, depth_scale=1.)
+        depth_safety_m = depth_safety  # meters
+
+        # camera intrinsics (reuse existing logic)
+        fovy_offset = float(self.warp_renderer.fovy_dist_offset[0].item())
+        tan_half = 1.0 / (fovy_offset + 1.0)
+        H_orig, W_orig = depth_safety.shape[1], depth_safety.shape[2]
+        fy = (H_orig / 2.0) / tan_half
+        fx = fy
+        cx = W_orig / 2.0
+        cy = H_orig / 2.0
+
+        v, u = torch.meshgrid(torch.arange(H_orig, device=self.device, dtype=torch.float32),
+                              torch.arange(W_orig, device=self.device, dtype=torch.float32), indexing='ij')
+        z = depth_safety_m
+        x_c = (u - cx) / fx * z
+        y_c = (v - cy) / fy * z
+
+        warp2gym_R = self.warp_renderer.warp2gym[:3, :3]
+        gym_from_warp_R = warp2gym_R.T
+        cam_pos_warp = self._warp2cam[:, :3, 3]
+        cam_pos_world = (gym_from_warp_R @ cam_pos_warp.T).T
+        cam_rot_warp = self._warp2cam[:, :3, :3]
+        cam_rot_world = gym_from_warp_R.unsqueeze(0) @ cam_rot_warp
+
+        pts_cam_warp = torch.stack([z, -x_c, -y_c], dim=-1)
+        pts_world = (cam_rot_world[:, None, None] @ pts_cam_warp.unsqueeze(-1)).squeeze(-1) + cam_pos_world[:, None, None]
+
+        hs = self.terrain.cfg.horizontal_scale
+        border = self.terrain.cfg.border_size
+        px = ((pts_world[..., 0] + border) / hs).long().clamp(0, self.terrain_safety_map.shape[1] - 1)
+        py = ((pts_world[..., 1] + border) / hs).long().clamp(0, self.terrain_safety_map.shape[0] - 1)
+
+        safety_heatmap = self.terrain_safety_map[px, py]  # [B, H_orig, W_orig] match [col,row] convention
+        # height_diff filter: exclude body pixels and vertical surfaces
+        pts_xy_flat = pts_world[..., :2].reshape(-1, 2)
+        terrain_h = self._query_height_at_points(pts_xy_flat).reshape(pts_world.shape[0], pts_world.shape[1], pts_world.shape[2])
+        height_diff = torch.abs(pts_world[..., 2] - terrain_h)
+        valid = (depth_safety_m > 0) & (height_diff < 0.15)
+        safety_heatmap = safety_heatmap * valid.float()
+
 
         # add noise to raw depth images
         if self.cfg.depth.gaussian_noise:
@@ -287,12 +341,81 @@ class LeggedRobot(BaseTask):
         self.warp_depth_buffer = torch.cat([self.warp_depth_buffer[:, 1:], depth_images.unsqueeze(1)], dim=1)
         self.warp_depth_buffer[init_flag] = torch.stack([depth_images] * self.cfg.depth.buffer_len, dim=1)[init_flag]
 
-        # generate stair tread mask from normalized depth (GT, no noise)
-        safety_heatmap = self._generate_safety_heatmap(depth_norm_full)
+        # safety heatmap already computed from clean depth above (before noise)
         safety_heatmap_resized = self._crop_and_resize_depth_images(safety_heatmap)
         self.warp_safety_heatmap_buffer = torch.cat([self.warp_safety_heatmap_buffer[:, 1:], safety_heatmap_resized.unsqueeze(1)], dim=1)
         self.warp_safety_heatmap_buffer[init_flag] = torch.stack([safety_heatmap_resized] * self.cfg.depth.buffer_len, dim=1)[init_flag]
 
+        # body mask: 1=terrain pixel, 0=body pixel (excluded from seg_loss)
+        body_mask = torch.ones_like(depth_images)  # all terrain for now (body detect via depth discontinuity TBD)  # body is closer than terrain
+        body_mask = body_mask.float()
+        body_mask_resized = self._crop_and_resize_depth_images(body_mask)
+        self.warp_body_mask_buffer = torch.cat([self.warp_body_mask_buffer[:, 1:], body_mask_resized.unsqueeze(1)], dim=1)
+        self.warp_body_mask_buffer[init_flag] = torch.stack([body_mask_resized] * self.cfg.depth.buffer_len, dim=1)[init_flag]
+
+
+    def _draw_terrain_safety_overlay(self):
+        """Draw terrain safety map on the mesh surface (green safe, red danger)."""
+        if self.viewer is None:
+            return
+        if not hasattr(self, "terrain_safety_map"):
+            return
+        if self.cfg.terrain.mesh_type not in ["heightfield", "trimesh"]:
+            return
+        if not hasattr(self, "terrain_levels") or not hasattr(self, "terrain_types"):
+            return
+
+        env_id = int(self.lookat_id) if hasattr(self, "lookat_id") else 0
+        row = int(self.terrain_levels[env_id].item())
+        col = int(self.terrain_types[env_id].item())
+
+        border_px = self.terrain.border
+        len_px = self.terrain.length_per_env_pixels
+        wid_px = self.terrain.width_per_env_pixels
+        start_x = border_px + row * len_px
+        end_x = start_x + len_px
+        start_y = border_px + col * wid_px
+        end_y = start_y + wid_px
+
+        spacing = getattr(self.cfg.terrain, "safety_map_sample_spacing", 0.2)
+        stride = max(1, int(round(spacing / self.terrain.cfg.horizontal_scale)))
+        n_x = max(1, (end_x - start_x + stride - 1) // stride)
+        n_y = max(1, (end_y - start_y + stride - 1) // stride)
+        max_points = 2500
+        if n_x * n_y > max_points:
+            factor = int(np.ceil(np.sqrt((n_x * n_y) / max_points)))
+            stride *= max(1, factor)
+
+        xs_idx = torch.arange(start_x, end_x, stride, device=self.device)
+        ys_idx = torch.arange(start_y, end_y, stride, device=self.device)
+        if xs_idx.numel() == 0 or ys_idx.numel() == 0:
+            return
+
+        safety = self.terrain_safety_map[start_x:end_x:stride, start_y:end_y:stride]
+        height = self.height_samples[start_x:end_x:stride, start_y:end_y:stride].float() * self.terrain.cfg.vertical_scale
+
+        scale = self.terrain.cfg.horizontal_scale
+        border_m = self.terrain.cfg.border_size
+        xs = xs_idx.float() * scale - border_m
+        ys = ys_idx.float() * scale - border_m
+        grid_x, grid_y = torch.meshgrid(xs, ys, indexing="ij")
+        z = height
+
+        pts = torch.stack([grid_x, grid_y, z], dim=-1).reshape(-1, 3).cpu().numpy()
+        safety_vals = safety.reshape(-1).clamp(0.0, 1.0).cpu().numpy()
+
+        if not hasattr(self, "_safety_viz_geoms"):
+            radius = max(0.02, 0.25 * scale)
+            colors = [(1.0, 0.0, 0.0), (0.75, 0.25, 0.0), (0.5, 0.5, 0.0), (0.25, 0.75, 0.0), (0.0, 1.0, 0.0)]
+            self._safety_viz_geoms = [gymutil.WireframeSphereGeometry(radius, 6, 6, None, color=c) for c in colors]
+
+        self.gym.clear_lines(self.viewer)
+        bins = len(self._safety_viz_geoms)
+        z_offset = 0.02
+        for point, s in zip(pts, safety_vals):
+            idx = min(bins - 1, int(s * bins))
+            pose = gymapi.Transform(gymapi.Vec3(point[0], point[1], point[2] + z_offset), r=None)
+            gymutil.draw_lines(self._safety_viz_geoms[idx], self.gym, self.viewer, self.envs[env_id], pose)
 
     def post_physics_step(self):
         """ check terminations, compute observations and rewards
@@ -494,16 +617,22 @@ class LeggedRobot(BaseTask):
                 self.camera_x_angle = roll
 
             camera_fovy = torch_rand_float(self.cfg.depth.fovy_range[0], self.cfg.depth.fovy_range[1], (self.num_envs, 1), device=self.device)
+            far_t = float(self.cfg.depth.far_clip) + 0.2
             self.warp_renderer = DepthRendererWarp(
                 image_params=self.cfg.depth.original,
                 cam2base_xyz=camera_pos,
                 cam2base_euler=euler,
                 fovy=camera_fovy,
-                device=self.device
+                device=self.device,
+                num_envs=self.num_envs,
+                far_t=far_t,
+                miss_t=far_t,
             )
             self.terrain.vertices[:, :2] = self.terrain.vertices[:, :2] - self.cfg.terrain.border_size
             self.warp_renderer.render_mesh(self.terrain.vertices, self.terrain.triangles)
         self._create_envs()
+        if self.cfg.depth.enable_self_occlusion:
+            self._init_self_occlusion_meshes()
 
     def set_camera(self, position, lookat):
         """ Set camera position and direction
@@ -925,6 +1054,10 @@ class LeggedRobot(BaseTask):
                                             self.cfg.depth.buffer_len,
                                             self.cfg.depth.resized[0],
                                             self.cfg.depth.resized[1]).to(self.device)
+            self.warp_body_mask_buffer = torch.zeros(self.num_envs,
+                                            self.cfg.depth.buffer_len,
+                                            self.cfg.depth.resized[0],
+                                            self.cfg.depth.resized[1]).to(self.device)
             self._cam_rot_w = None
             self._cam_pos_w = None
             self._warp2cam = None
@@ -999,6 +1132,19 @@ class LeggedRobot(BaseTask):
         local_mean = F.avg_pool2d(h_3d, kernel_size=3, stride=1, padding=1)
         local_var = F.avg_pool2d((h_3d - local_mean)**2, kernel_size=3, stride=1, padding=1)
         self.flatness_map = torch.exp(-local_var.squeeze() / (0.02**2))
+        self.flatness_map = torch.exp(-local_var.squeeze() / (0.02**2))
+
+        # Precompute terrain safety map: nz * 0.5 + flatness * 0.5
+        with torch.no_grad():
+            vs = self.terrain.cfg.vertical_scale
+            hs = self.terrain.cfg.horizontal_scale
+            h = torch.tensor(self.terrain.height_field_raw, dtype=torch.float32, device=self.device) * vs
+            dz_dx = (h[2:, 1:-1] - h[:-2, 1:-1]) / (2 * hs)
+            dz_dy = (h[1:-1, 2:] - h[1:-1, :-2]) / (2 * hs)
+            nz = 1.0 / torch.sqrt(1.0 + dz_dx**2 + dz_dy**2)
+            nz = torch.nn.functional.pad(nz[None, None], (1, 1, 1, 1), mode='replicate').squeeze()
+            self.terrain_safety_map = 0.5 * nz + 0.5 * self.flatness_map
+        print(f"[SAFETY_MAP] Precomputed terrain_safety_map shape={self.terrain_safety_map.shape}")
 
     def attach_camera(self, i, env_handle, actor_handle):
         if self.cfg.depth.use_camera:
@@ -1068,6 +1214,7 @@ class LeggedRobot(BaseTask):
 
         # save body names from the asset
         body_names = self.gym.get_asset_rigid_body_names(robot_asset)
+        self.body_names = body_names
         self.dof_names = self.gym.get_asset_dof_names(robot_asset)
         self.num_bodies = len(body_names)
         self.num_dofs = len(self.dof_names)
@@ -1161,6 +1308,57 @@ class LeggedRobot(BaseTask):
         self.termination_contact_indices = torch.zeros(len(termination_contact_names), dtype=torch.long, device=self.device, requires_grad=False)
         for i in range(len(termination_contact_names)):
             self.termination_contact_indices[i] = self.gym.find_actor_rigid_body_handle(self.envs[0], self.actor_handles[0], termination_contact_names[i])
+
+    def _init_self_occlusion_meshes(self):
+        if not self.cfg.depth.enable_self_occlusion:
+            return
+        if not hasattr(self, "warp_renderer") or self.warp_renderer is None:
+            return
+        if not hasattr(self.warp_renderer, "init_robot_meshes"):
+            return
+
+        module_name = getattr(self.cfg.depth, "robot_geom_module", "")
+        if not module_name:
+            print("[SELF_OCCLUSION] robot_geom_module not set; skipping self-occlusion BVH.")
+            return
+
+        try:
+            import importlib
+            from legged_gym.utils.robot_geom import build_robot_template
+            geom_mod = importlib.import_module(module_name)
+        except Exception as exc:
+            print(f"[SELF_OCCLUSION] Failed to import {module_name}: {exc}")
+            return
+
+        link_geoms = None
+        for attr in ("LINK_GEOMS", "H1_LINK_GEOMS", "G1_LINK_GEOMS"):
+            if hasattr(geom_mod, attr):
+                link_geoms = getattr(geom_mod, attr)
+                break
+        if link_geoms is None:
+            print(f"[SELF_OCCLUSION] No link geometry list found in {module_name}.")
+            return
+
+        template = build_robot_template(link_geoms)
+        body_indices = []
+        missing = []
+        for name in template.link_names:
+            if name in self.body_names:
+                body_indices.append(self.body_names.index(name))
+            else:
+                missing.append(name)
+        if missing:
+            print(f"[SELF_OCCLUSION] Missing body names ({len(missing)}): {missing[:5]}")
+            return
+
+        self.warp_renderer.init_robot_meshes(
+            template_verts_local=template.verts_local,
+            template_tris=template.tris,
+            vert_to_link=template.vert_to_link,
+            body_indices=np.array(body_indices, dtype=np.int32),
+            refit_stride=getattr(self.cfg.depth, "refit_stride", 1),
+        )
+        print(f"[SELF_OCCLUSION] Initialized robot BVHs: verts={template.num_verts} tris={template.num_tris}")
 
     def _get_env_origins(self):
         """ Sets environment origins. On rough terrain the origins are defined by the terrain platforms.
@@ -1313,10 +1511,7 @@ class LeggedRobot(BaseTask):
         """Binary stair-tread mask via backprojection + terrain height query.
         depth_images: [B, H, W] normalized depth at original resolution (before crop).
         """
-        print("[SAFETY_ENTRY] called, h_samples=%s warp2cam=%s depth_shape=%s" % (
-            str(self.height_samples is not None),
-            str(self._warp2cam is not None),
-            str(depth_images.shape)))
+
         if self.height_samples is None or self._warp2cam is None:
             return torch.zeros_like(depth_images)
         B, H, W = depth_images.shape
@@ -1373,10 +1568,18 @@ class LeggedRobot(BaseTask):
         w1, w2, w3 = 0.4, 0.3, 0.3
         safety = w1 * terrain_nz + w2 * flatness + w3 * edge_score
 
-        valid = (depth_m > 0) & (height_diff < 0.9)
+        valid = (depth_m > 0) & (height_diff < 0.2)
         safety = safety * valid.float()
 
         return safety
+
+    def _get_foot_safety(self, foot_xy):
+        """foot_xy: [N, 2] world (x,y) -> safety [N] from precomputed map."""
+        s = self.terrain.cfg.horizontal_scale
+        b = self.terrain.cfg.border_size
+        px = ((foot_xy[:, 0] + b) / s).long().clamp(0, self.terrain_safety_map.shape[1] - 1)
+        py = ((foot_xy[:, 1] + b) / s).long().clamp(0, self.terrain_safety_map.shape[0] - 1)
+        return self.terrain_safety_map[px, py]
 
     def _query_height_at_points(self, points_xy):
         px = (points_xy[:, 0] + self.terrain.cfg.border_size) / self.terrain.cfg.horizontal_scale

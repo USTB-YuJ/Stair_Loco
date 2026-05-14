@@ -39,6 +39,7 @@ class LeggedRobotCfg(BaseConfig):
         dynamic_friction = 1.0
         restitution = 0.
         measure_heights = True
+        visualize_safety_map = False  # pop-up terrain safety heatmap overlay
         measured_points_x = [-0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1, 0., 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8] # 1mx1.6m rectangle (without center line)
         measured_points_y = [-0.5, -0.4, -0.3, -0.2, -0.1, 0., 0.1, 0.2, 0.3, 0.4, 0.5]
         measure_horizontal_noise = 0.0
@@ -65,6 +66,10 @@ class LeggedRobotCfg(BaseConfig):
         use_camera = False
         warp_camera = False
         warp_device = 'cuda:0'
+
+        enable_self_occlusion = False
+        robot_geom_module = ""
+        refit_stride = 1
 
         position = [0.0576235, 0.01753, 0.42987]
         original = (64, 64)  # full-frame render/camera size before optional ROI crop

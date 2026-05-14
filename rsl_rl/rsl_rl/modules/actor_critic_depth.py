@@ -295,7 +295,7 @@ class ActorCriticDepth(nn.Module):
     def act_inference(self, observations, history, depth, **kwargs):
         history = history.flatten(1)
         his_feature = self.history_encoder(history)
-        depth_feature, _ = self.depth_encoder(depth)
+        depth_feature, self._last_pred_masks = self.depth_encoder(depth)
         actor_input = torch.cat((observations, his_feature, depth_feature), dim=-1)
         actions_mean = self.actor(actor_input)
         return actions_mean

@@ -52,6 +52,8 @@ class RolloutStorageEX:
             self.history = None
             self.depth_image = None
             self.gt_safety_heatmap = None
+            self.gt_body_mask = None
+            self.gt_body_mask = None
             self.next_observations = None
             self.next_critic_observations = None
         
@@ -69,6 +71,7 @@ class RolloutStorageEX:
             assert isinstance(depth_shape, tuple) and len(depth_shape) == 2
             self.depth_image = torch.zeros(num_transitions_per_env, num_envs, depth_buffer_len, *depth_shape, device=self.device)
             self.gt_safety_heatmap = torch.zeros(num_transitions_per_env, num_envs, depth_buffer_len, *depth_shape, device=self.device)
+            self.gt_body_mask = torch.zeros(num_transitions_per_env, num_envs, depth_buffer_len, *depth_shape, device=self.device)
 
         self.obs_shape = obs_shape
         self.privileged_obs_shape = privileged_obs_shape
@@ -128,6 +131,8 @@ class RolloutStorageEX:
             self.depth_image[self.step].copy_(transition.depth_image)
         if self.gt_safety_heatmap is not None and transition.gt_safety_heatmap is not None:
             self.gt_safety_heatmap[self.step].copy_(transition.gt_safety_heatmap)
+        if self.gt_body_mask is not None and transition.gt_body_mask is not None:
+            self.gt_body_mask[self.step].copy_(transition.gt_body_mask)
         self.rewards[self.step].copy_(transition.rewards.view(-1, self.num_critics))
         self.dones[self.step].copy_(transition.dones.view(-1, 1))
         self.values[self.step].copy_(transition.values)
@@ -193,6 +198,7 @@ class RolloutStorageEX:
         history = self.history.flatten(0, 1)
         depth_image = self.depth_image.flatten(0, 1) if self.depth_image is not None else None
         gt_mask = self.gt_safety_heatmap.flatten(0, 1) if self.gt_safety_heatmap is not None else None
+        body_mask = self.gt_body_mask.flatten(0, 1) if self.gt_body_mask is not None else None
         gate_weights = self.gate_weights.flatten(0, 1) if self.gate_weights is not None else None
 
         if self.privileged_observations is not None:
@@ -230,10 +236,11 @@ class RolloutStorageEX:
                 history_batch = history[batch_idx]
                 depth_image_batch = depth_image[batch_idx] if depth_image is not None else None
                 gt_safety_heatmap_batch = gt_mask[batch_idx] if gt_mask is not None else None
+                gt_body_mask_batch = body_mask[batch_idx] if body_mask is not None else None
                 gate_weights_batch = gate_weights[batch_idx] if gate_weights is not None else None
                 
                 yield obs_batch, critic_observations_batch, actions_batch, next_obs_batch, next_critic_observations_batch, history_batch, target_values_batch, advantages_batch, returns_batch, \
-                       old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (None, None), None, depth_image_batch, gt_safety_heatmap_batch
+                       old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (None, None), None, depth_image_batch, gt_safety_heatmap_batch, gt_body_mask_batch
 
     # for RNNs only
     def reccurent_mini_batch_generator(self, num_mini_batches, num_epochs=8):

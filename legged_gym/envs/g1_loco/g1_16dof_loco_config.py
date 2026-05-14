@@ -34,7 +34,7 @@ class G1_16Dof_Loco_Cfg( LeggedRobotCfg ):
         max_error = 0.1 # for fast
 
         edge_width_thresh = 0
-        horizontal_scale = 0.05 #  0.1 [m] influence computation time by a lot
+        horizontal_scale = 0.1 #  0.1 [m] influence computation time by a lot
         vertical_scale = 0.005 # [m]
         border_size = 5 # [m]
         height = [0.02, 0.06]
@@ -53,6 +53,8 @@ class G1_16Dof_Loco_Cfg( LeggedRobotCfg ):
         dynamic_friction = 1.0
         restitution = 0.
         measure_heights = True
+        visualize_safety_map = False  # 3D terrain safety overlay
+        safety_map_sample_spacing = 0.05
         measured_points_x = [-0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1, 0., 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8] # 1mx1.6m rectangle (without center line)
         measured_points_y = [-0.5, -0.4, -0.3, -0.2, -0.1, 0., 0.1, 0.2, 0.3, 0.4, 0.5]
         measure_horizontal_noise = 0.0
@@ -65,11 +67,11 @@ class G1_16Dof_Loco_Cfg( LeggedRobotCfg ):
         num_rows = 10 # number of terrain rows (levels)  # spreaded is benifitiall !
         num_cols = 30 # number of terrain cols (types)
         
-        terrain_dict = {"roughness": 0.0, 
+        terrain_dict = {"roughness": 0.5, 
                         "slope": 0.0,
                         "pit": 0.0,
                         "gap": 0.0,
-                        "stair": 0.05,
+                        "stair": 0.5,
                         "hurdle": 0.,}
         terrain_proportions = list(terrain_dict.values())
         
@@ -106,6 +108,10 @@ class G1_16Dof_Loco_Cfg( LeggedRobotCfg ):
         warp_camera = True
         warp_device = 'cuda:0'
 
+        enable_self_occlusion = True
+        robot_geom_module = "legged_gym.utils.g1_geom"
+        refit_stride = 1
+
         position = [0.0576235, 0.01753, 0.42987]
         original = (64, 64)
         resized = (64, 64)
@@ -116,7 +122,7 @@ class G1_16Dof_Loco_Cfg( LeggedRobotCfg ):
         fovy_range = [79.3, 79.3]
 
         # ----- camera randomization -----
-        y_angle = [42, 48]
+        y_angle = [42, 48] # 42 48
         z_angle = [-1, 1]
         x_angle = [-1, 1]
 
@@ -222,7 +228,7 @@ class G1_16Dof_Loco_Cfg( LeggedRobotCfg ):
         decimation = 4
 
     class asset( LeggedRobotCfg.asset ):
-        file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/g1/g1_16dof_lock_wrist_new_feet_fire_extinguisher.urdf'
+        file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/g1/g1_16dof_lock_wrist_new_feet.urdf'
 
         name = "g1"
         foot_name = "ankle_roll"
@@ -281,6 +287,7 @@ class G1_16Dof_Loco_Cfg( LeggedRobotCfg ):
             cheat = -2
             feet_edge = -0.5
             y_offset_pen = -0.5
+            foot_safety = 1.0
 
         feet_contact_force_range = [200. , 600.]
 

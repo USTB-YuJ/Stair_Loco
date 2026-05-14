@@ -46,6 +46,7 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
 
     def _init_buffers(self):
         super()._init_buffers()
+        self.was_contact = torch.zeros(self.num_envs, 2, dtype=torch.bool, device=self.device)
         self.last_last_actions = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
         self.last_feet_contact_force = torch.zeros(self.num_envs, 2, 3, dtype=torch.float, device=self.device, requires_grad=False)
         self.last_last_feet_contact_force = torch.zeros(self.num_envs, 2, 3, dtype=torch.float, device=self.device, requires_grad=False)
@@ -462,6 +463,14 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
     #     rew = (self.terrain_levels > 3) * torch.sum(self.feet_at_edge, dim=-1)
     #     return rew
     
+    def _reward_foot_safety(self):
+        contact_now = self.contact_filt
+        contact_moment = contact_now & ~self.was_contact
+        feet_pos = self.rigid_body_states.view(self.num_envs, self.num_bodies, 13)[:, self.feet_indices, :2]
+        safety = self._get_foot_safety(feet_pos.reshape(-1, 2)).reshape(self.num_envs, 2)
+        self.was_contact = contact_now
+        return (safety * contact_moment.float()).sum(dim=-1)
+
     def _reward_y_offset_pen(self):
         pen = torch.abs(self.root_states[:, 1] - self.origin_y) * torch.logical_and(self.env_class != 0, self.env_class != 1)
         return pen

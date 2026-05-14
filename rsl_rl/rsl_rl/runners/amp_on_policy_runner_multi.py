@@ -222,6 +222,10 @@ class AMPOnPolicyRunnerMulti:
                         amp_obs = torch.clone(next_amp_obs)
                         if self.use_depth and hasattr(self.env, 'warp_safety_heatmap_buffer'):
                             self.alg.transition.gt_safety_heatmap = self.env.warp_safety_heatmap_buffer.clone().to(self.device)
+                        if self.use_depth and hasattr(self.env, 'warp_body_mask_buffer'):
+                            self.alg.transition.gt_body_mask = self.env.warp_body_mask_buffer.clone().to(self.device)
+                        if self.use_depth and hasattr(self.env, 'warp_body_mask_buffer'):
+                            self.alg.transition.gt_body_mask = self.env.warp_body_mask_buffer.clone().to(self.device)
                         self.alg.process_env_step(rewards, dones, infos, next_obs, next_critic_obs, self.amp_obs_frames)
                     else:
                         if self.use_depth and hasattr(self.env, 'warp_safety_heatmap_buffer'):
@@ -303,9 +307,35 @@ class AMPOnPolicyRunnerMulti:
         self.writer.add_scalar('Loss/surrogate', locs['mean_surrogate_loss'], locs['it'])
         self.writer.add_scalar('Loss/learning_rate', self.alg.policy_learning_rate, locs['it'])
         self.writer.add_scalar('Policy/mean_noise_std', mean_std.item(), locs['it'])
+        if hasattr(self.alg, 'last_seg_loss'):
+            self.writer.add_scalar('Loss/seg', self.alg.last_seg_loss, locs['it'])
         self.writer.add_scalar('Perf/total_fps', fps, locs['it'])
         self.writer.add_scalar('Perf/collection time', locs['collection_time'], locs['it'])
         self.writer.add_scalar('Perf/learning_time', locs['learn_time'], locs['it'])
+
+        # heatmap visualization: GT vs Pred every 500 iters
+        if locs['it'] % 500 == 0 and hasattr(self.alg, '_last_pred_heatmap') and self.alg._last_pred_heatmap is not None:
+            try:
+                import matplotlib
+                matplotlib.use('Agg')
+                import matplotlib.pyplot as plt
+                import numpy as np
+                gt = self.alg._last_gt_heatmap[0, -1].cpu().numpy()
+                pred = self.alg._last_pred_heatmap[0, -1].cpu().numpy()
+                fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+                axes[0].imshow(gt, vmin=0, vmax=1, cmap='inferno')
+                axes[0].set_title('GT Safety')
+                axes[1].imshow(pred, vmin=0, vmax=1, cmap='inferno')
+                axes[1].set_title('Pred Safety')
+                axes[2].imshow(np.abs(gt - pred), vmin=0, vmax=1, cmap='hot')
+                axes[2].set_title('|GT - Pred|')
+                for ax in axes:
+                    ax.axis('off')
+                plt.tight_layout()
+                self.writer.add_figure('Heatmap/gt_vs_pred', fig, locs['it'])
+                plt.close(fig)
+            except Exception as e:
+                print(f"[HEATMAP_VIZ] Failed: {e}")
         if len(locs['rewbuffer']) > 0:
             self.writer.add_scalar('Train/mean_reward', statistics.mean(locs['rewbuffer']), locs['it'])
             self.writer.add_scalar('Train/mean_episode_length', statistics.mean(locs['lenbuffer']), locs['it'])
@@ -319,6 +349,8 @@ class AMPOnPolicyRunnerMulti:
                             'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
                           f"""{'Value function loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
                           f"""{'Surrogate loss:':>{pad}} {locs['mean_surrogate_loss']:.4f}\n"""
+                          f"""{'Seg loss:       ':'>{pad}} {self.alg.last_seg_loss:.6f}\n""" if hasattr(self.alg, 'last_seg_loss') else ""
+                          f"""{'Seg loss:       ':'>{pad}} {self.alg.last_seg_loss:.6f}\n""" if hasattr(self.alg, 'last_seg_loss') else ""
                           f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
                           f"""{'Mean reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
                           f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n""")

@@ -266,7 +266,7 @@ class AMPPPOMulti:
                 mean_demo_acc += demo_acc.mean().item()
         
         for obs_batch, critic_obs_batch, actions_batch, next_obs_batch, next_critic_observations_batch, history_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, \
-            old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch, depth_image_batch, gt_safety_heatmap_batch, *_ in generator:
+            old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch, depth_image_batch, gt_safety_heatmap_batch, gt_body_mask_batch, *_ in generator:
 
             aug_obs_batch, history_batch = obs_batch.detach(), history_batch.detach()
             if self.use_depth:
@@ -331,13 +331,26 @@ class AMPPPOMulti:
                 self.entropy_coef * entropy_batch.mean())
 
             if self.use_depth and gt_safety_heatmap_batch is not None and self.seg_loss_coef > 0:
+                if not hasattr(self, '_seg_loss_printed'):
+                    self._seg_loss_printed = True
+                    print(f"[SEG_DEBUG] seg_loss enabled: coef={self.seg_loss_coef}, use_depth={self.use_depth}")
                 import torch.nn.functional as _F
                 _, pred_masks = self.actor_critic.depth_encoder(aug_depth_image_batch)
                 seg_loss = _F.mse_loss(
                     pred_masks.flatten(0, 1),
-                    gt_safety_heatmap_batch.flatten(0, 1).to(pred_masks.device)
+                    gt_safety_heatmap_batch.flatten(0, 1).to(pred_masks.device),
+                    reduction='none'
                 )
+                if gt_body_mask_batch is not None:
+                    mask = gt_body_mask_batch.flatten(0, 1).to(pred_masks.device)
+                    seg_loss = (seg_loss * mask).sum() / mask.sum().clamp(min=1)
+                else:
+                    seg_loss = seg_loss.mean()
                 loss = loss + self.seg_loss_coef * seg_loss
+                # store for tensorboard logging & visualization
+                self.last_seg_loss = seg_loss.item()
+                self._last_pred_heatmap = pred_masks.detach()
+                self._last_gt_heatmap = gt_safety_heatmap_batch.detach()
 
             # Gradient step
             self.optimizer.zero_grad()
