@@ -154,10 +154,20 @@ def play(args):
         if env.cfg.depth.warp_camera or env.cfg.depth.use_camera:
             obs = (obs, depth_image)
 
+        vis_gt_safety = None
+        if env.cfg.depth.warp_camera and hasattr(env, 'warp_safety_heatmap_buffer'):
+            vis_gt_safety = env.warp_safety_heatmap_buffer[:, -1:].squeeze(1).detach().clone()
+
         if isinstance(obs, tuple):
             actions = policy(obs[0].detach(), trajectory_history.detach(), obs[1].detach())
         else:
             actions = policy(obs.detach(), trajectory_history)
+
+        vis_pred_safety = None
+        pred_masks = getattr(ppo_runner.alg.actor_critic, "_last_pred_masks", None)
+        if pred_masks is not None:
+            vis_pred_safety = pred_masks[0:1, -1].detach().clone()
+
         obs, _, _, dones, infos, *_= env.step(actions.detach())
 
         # Capture frame for recording
@@ -193,14 +203,14 @@ def play(args):
                 # ("7.normalized", env._depth_stage_normalized),
                 # ("8.+filter",    env._raw_warp_depth),
                 # ("9.final",      env.warp_depth_buffer[:, -1:].squeeze(1)),
-                ("Safety",      env.warp_safety_heatmap_buffer[:, -1:].squeeze(1)),
-                ("Pred Safety", ppo_runner.alg.actor_critic._last_pred_masks[0:1, -1].detach() if hasattr(ppo_runner.alg.actor_critic, "_last_pred_masks") else torch.zeros(1, *env.cfg.depth.resized)),
+                ("Safety",      vis_gt_safety if vis_gt_safety is not None else env.warp_safety_heatmap_buffer[:, -1:].squeeze(1)),
+                ("Pred Safety", vis_pred_safety if vis_pred_safety is not None else torch.zeros(1, *env.cfg.depth.resized, device=env.device)),
             ]
             # debug: first 5 steps only
             import __main__ as _m
             if not hasattr(_m, '_heatmap_checked'):
                 _m._heatmap_checked = True
-                _buf = env.warp_safety_heatmap_buffer[:, -1]
+                _buf = vis_gt_safety if vis_gt_safety is not None else env.warp_safety_heatmap_buffer[:, -1]
                 _d = env._depth_stage_normalized
                 print(f"[DEBUG] safety: min={_buf.min().item():.4f} max={_buf.max().item():.4f} mean={_buf.mean().item():.4f} nonzero={(_buf>1e-6).float().mean().item():.3f}")
                 print(f"[DEBUG] depth_norm: min={_d.min().item():.4f} max={_d.max().item():.4f} mean={_d.mean().item():.4f}")
@@ -309,7 +319,7 @@ if __name__ == '__main__':
     args = get_args()
     # args.task = "h1_loco"
     args.task = "g1_16dof_loco"
-    args.load_run = "/root/gpufree-data/workspace/more/logs/g1_16dof_loco/May13_16-48-39_"
+    args.load_run = "/root/gpufree-data/workspace/more/logs/g1_16dof_loco/May15_00-10-08_"
     args.record = True
     args.headless = not args.record  # need viewer for recording
     args.save_depth = False

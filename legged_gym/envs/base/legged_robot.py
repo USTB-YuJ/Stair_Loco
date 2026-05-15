@@ -255,10 +255,11 @@ class LeggedRobot(BaseTask):
 
         hs = self.terrain.cfg.horizontal_scale
         border = self.terrain.cfg.border_size
-        px = ((pts_world[..., 0] + border) / hs).long().clamp(0, self.terrain_safety_map.shape[1] - 1)
-        py = ((pts_world[..., 1] + border) / hs).long().clamp(0, self.terrain_safety_map.shape[0] - 1)
+        map_x, map_y = self.terrain_safety_map.shape
+        px = ((pts_world[..., 0] + border) / hs).long().clamp(0, map_x - 1)
+        py = ((pts_world[..., 1] + border) / hs).long().clamp(0, map_y - 1)
 
-        safety_heatmap = self.terrain_safety_map[px, py]  # [B, H_orig, W_orig] match [col,row] convention
+        safety_heatmap = self.terrain_safety_map[px, py]  # [B, H_orig, W_orig], x indexes rows and y indexes cols
         # height_diff filter: exclude body pixels and vertical surfaces
         pts_xy_flat = pts_world[..., :2].reshape(-1, 2)
         terrain_h = self._query_height_at_points(pts_xy_flat).reshape(pts_world.shape[0], pts_world.shape[1], pts_world.shape[2])
@@ -352,12 +353,6 @@ class LeggedRobot(BaseTask):
         self.warp_safety_heatmap_buffer = torch.cat([self.warp_safety_heatmap_buffer[:, 1:], safety_heatmap_resized.unsqueeze(1)], dim=1)
         self.warp_safety_heatmap_buffer[init_flag] = torch.stack([safety_heatmap_resized] * self.cfg.depth.buffer_len, dim=1)[init_flag]
 
-        # body mask: 1=terrain pixel, 0=body pixel (excluded from seg_loss)
-        body_mask = torch.ones_like(depth_images)  # all terrain for now (body detect via depth discontinuity TBD)  # body is closer than terrain
-        body_mask = body_mask.float()
-        body_mask_resized = self._crop_and_resize_depth_images(body_mask)
-        self.warp_body_mask_buffer = torch.cat([self.warp_body_mask_buffer[:, 1:], body_mask_resized.unsqueeze(1)], dim=1)
-        self.warp_body_mask_buffer[init_flag] = torch.stack([body_mask_resized] * self.cfg.depth.buffer_len, dim=1)[init_flag]
 
 
     def _draw_terrain_safety_overlay(self):
@@ -1060,10 +1055,6 @@ class LeggedRobot(BaseTask):
                                             self.cfg.depth.buffer_len,
                                             self.cfg.depth.resized[0],
                                             self.cfg.depth.resized[1]).to(self.device)
-            self.warp_body_mask_buffer = torch.zeros(self.num_envs,
-                                            self.cfg.depth.buffer_len,
-                                            self.cfg.depth.resized[0],
-                                            self.cfg.depth.resized[1]).to(self.device)
             self._cam_rot_w = None
             self._cam_pos_w = None
             self._warp2cam = None
@@ -1151,6 +1142,9 @@ class LeggedRobot(BaseTask):
             nz = torch.nn.functional.pad(nz[None, None], (1, 1, 1, 1), mode='replicate').squeeze()
             self.terrain_safety_map = 0.5 * nz + 0.5 * self.flatness_map
         print(f"[SAFETY_MAP] Precomputed terrain_safety_map shape={self.terrain_safety_map.shape}")
+        sm = self.terrain_safety_map
+        print(f"[SAFETY_MAP] min={sm.min().item():.4f} max={sm.max().item():.4f} mean={sm.mean().item():.4f}")
+        print(f"[SAFETY_MAP] fraction<0.5: {(sm < 0.5).float().mean().item():.3f}  fraction>0.9: {(sm > 0.9).float().mean().item():.3f}")
 
     def attach_camera(self, i, env_handle, actor_handle):
         if self.cfg.depth.use_camera:
@@ -1580,12 +1574,45 @@ class LeggedRobot(BaseTask):
         return safety
 
     def _get_foot_safety(self, foot_xy):
-        """foot_xy: [N, 2] world (x,y) -> safety [N] from precomputed map."""
-        s = self.terrain.cfg.horizontal_scale
+        """foot_xy: [N, 2] world (x,y) -> area-weighted safety [N] from precomputed map.
+        G1 foot sole: 0.208m x 0.076m (from ankle_roll_link.STL bounding box).
+        """
+        if foot_xy.shape[0] == 0:
+            return torch.empty(0, dtype=self.terrain_safety_map.dtype, device=foot_xy.device)
+
+        s = self.terrain.cfg.horizontal_scale  # 0.05m
         b = self.terrain.cfg.border_size
-        px = ((foot_xy[:, 0] + b) / s).long().clamp(0, self.terrain_safety_map.shape[1] - 1)
-        py = ((foot_xy[:, 1] + b) / s).long().clamp(0, self.terrain_safety_map.shape[0] - 1)
-        return self.terrain_safety_map[px, py]
+        hl, hw = 0.104, 0.038  # half length (x), half width (y)
+
+        map_x, map_y = self.terrain_safety_map.shape
+        x0 = torch.floor((foot_xy[:, 0] - hl + b) / s).long().clamp(0, map_x - 1)
+        x1 = torch.floor((foot_xy[:, 0] + hl + b) / s).long().clamp(0, map_x - 1)
+        y0 = torch.floor((foot_xy[:, 1] - hw + b) / s).long().clamp(0, map_y - 1)
+        y1 = torch.floor((foot_xy[:, 1] + hw + b) / s).long().clamp(0, map_y - 1)
+
+        # Fixed-size candidate windows cover every grid cell touched by the foot rectangle.
+        max_x_cells = int(np.ceil((2 * hl) / s)) + 2
+        max_y_cells = int(np.ceil((2 * hw) / s)) + 2
+        xs = (x0[:, None] + torch.arange(max_x_cells, device=foot_xy.device)[None, :]).clamp(max=map_x - 1)
+        ys = (y0[:, None] + torch.arange(max_y_cells, device=foot_xy.device)[None, :]).clamp(max=map_y - 1)
+        valid_x = xs <= x1[:, None]
+        valid_y = ys <= y1[:, None]
+
+        fx0, fx1 = foot_xy[:, 0] - hl, foot_xy[:, 0] + hl
+        fy0, fy1 = foot_xy[:, 1] - hw, foot_xy[:, 1] + hw
+        cx0 = xs.float() * s - b
+        cx1 = (xs.float() + 1) * s - b
+        cy0 = ys.float() * s - b
+        cy1 = (ys.float() + 1) * s - b
+
+        wx = torch.clamp(torch.minimum(cx1, fx1[:, None]) - torch.maximum(cx0, fx0[:, None]), min=0)
+        wy = torch.clamp(torch.minimum(cy1, fy1[:, None]) - torch.maximum(cy0, fy0[:, None]), min=0)
+        wx = wx * valid_x.float()
+        wy = wy * valid_y.float()
+
+        area = wx[:, :, None] * wy[:, None, :]
+        safety = self.terrain_safety_map[xs[:, :, None], ys[:, None, :]]
+        return (safety * area).sum(dim=(1, 2)) / area.sum(dim=(1, 2)).clamp(min=1e-8)
 
     def _query_height_at_points(self, points_xy):
         px = (points_xy[:, 0] + self.terrain.cfg.border_size) / self.terrain.cfg.horizontal_scale

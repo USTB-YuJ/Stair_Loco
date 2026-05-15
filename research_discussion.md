@@ -235,6 +235,7 @@ def _get_foot_safety(self, foot_xy):
 ## 待确认事项
 
 - [ ] G1 Phase 1 训练：seg_loss 收敛、GT heatmap 可视化质量
+- [ ] 评估 Tiny U-Net / 多尺度 skip SegDecoder：注意强 skip 可能让 decoder 依赖浅层边缘旁路，导致 actor 使用的 `depth_feature` 未真正编码 safety；后续可考虑加入 bottleneck safety head 或低分辨率辅助监督，强制 actor 可见特征学习安全语义
 - [ ] body_mask 恢复（基于深度不连续检测，当前全 1）
 - [ ] 与 baseline 对比方案
 - [ ] 真机实验（G1 硬件）

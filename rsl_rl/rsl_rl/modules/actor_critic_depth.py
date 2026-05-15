@@ -29,6 +29,7 @@
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
 import numpy as np
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -138,22 +139,26 @@ class StackDepthEncoderGRU(nn.Module):
         )
         self.seg_decoder = SegDecoder()
 
-    def forward(self, depth_image):
+    def forward(self, depth_image: torch.Tensor, return_masks: bool = False) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         # depth_image shape: [batch_size, num, 64, 64]
         B, T = depth_image.shape[:2]
         latents, conv_feats = [], []
         for t in range(T):
             lat, cf = self.base_backbone(depth_image[:, t])
             latents.append(lat)
-            conv_feats.append(cf)
+            if return_masks:
+                conv_feats.append(cf)
         depth_latent = torch.stack(latents, dim=1)  # [B, T, 128]
-        conv_feats = torch.stack(conv_feats, dim=1)  # [B, T, 64, 5, 5]
 
         _, hidden = self.gru(depth_latent)
         history_feature = hidden[-1]
         latest_feature = depth_latent[:, -1]
         depth_feature = self.mlp(torch.cat([history_feature, latest_feature], dim=-1))
 
+        if not return_masks:
+            return depth_feature, None
+
+        conv_feats = torch.stack(conv_feats, dim=1)  # [B, T, 64, 5, 5]
         pred_masks = self.seg_decoder(conv_feats.flatten(0, 1))  # [B*T, H, W]
         H_m, W_m = pred_masks.shape[1], pred_masks.shape[2]
         pred_masks = pred_masks.reshape(B, T, H_m, W_m)  # [B, T, H, W]
@@ -281,10 +286,10 @@ class ActorCriticDepth(nn.Module):
         mean = self.actor(observations)
         self.distribution = Normal(mean, mean*0. + self.std)
 
-    def act(self, observations, history, depth, **kwargs):
+    def act(self, observations, history, depth, return_masks: bool = False, **kwargs):
         history = history.flatten(1)
         his_feature = self.history_encoder(history)
-        depth_feature, self._last_pred_masks = self.depth_encoder(depth)
+        depth_feature, self._last_pred_masks = self.depth_encoder(depth, return_masks=return_masks)
         actor_input = torch.cat((observations, his_feature, depth_feature), dim=-1)
         self.update_distribution(actor_input)
         return self.distribution.sample()
@@ -292,10 +297,10 @@ class ActorCriticDepth(nn.Module):
     def get_actions_log_prob(self, actions):
         return self.distribution.log_prob(actions).sum(dim=-1)
 
-    def act_inference(self, observations, history, depth, **kwargs):
+    def act_inference(self, observations, history, depth, return_masks: bool = True, **kwargs):
         history = history.flatten(1)
         his_feature = self.history_encoder(history)
-        depth_feature, self._last_pred_masks = self.depth_encoder(depth)
+        depth_feature, self._last_pred_masks = self.depth_encoder(depth, return_masks=return_masks)
         actor_input = torch.cat((observations, his_feature, depth_feature), dim=-1)
         actions_mean = self.actor(actor_input)
         return actions_mean

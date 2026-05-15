@@ -189,12 +189,17 @@ class AMPOnPolicyRunnerMulti:
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
                     history = self.trajectory_history
+                    current_gt_safety_heatmap = None
                     if infos["depth"] is not None:
                         depth_image = infos['depth']
                     if self.use_depth:
                         obs = (obs, depth_image)
+                        if hasattr(self.env, 'warp_safety_heatmap_buffer'):
+                            current_gt_safety_heatmap = self.env.warp_safety_heatmap_buffer.clone().to(self.device)
 
                     actions = self.alg.act(obs, critic_obs, history)
+                    if current_gt_safety_heatmap is not None:
+                        self.alg.transition.gt_safety_heatmap = current_gt_safety_heatmap
                     obs, privileged_obs, rewards, dones, infos, _, terminal_amp_states, terminal_obs, terminal_critic_obs = self.env.step(actions)
                     
                     critic_obs = privileged_obs if privileged_obs is not None else obs
@@ -220,16 +225,8 @@ class AMPOnPolicyRunnerMulti:
                             self.amp_obs_frames, rewards, normalizer=self.alg.amp_normalizer)
 
                         amp_obs = torch.clone(next_amp_obs)
-                        if self.use_depth and hasattr(self.env, 'warp_safety_heatmap_buffer'):
-                            self.alg.transition.gt_safety_heatmap = self.env.warp_safety_heatmap_buffer.clone().to(self.device)
-                        if self.use_depth and hasattr(self.env, 'warp_body_mask_buffer'):
-                            self.alg.transition.gt_body_mask = self.env.warp_body_mask_buffer.clone().to(self.device)
-                        if self.use_depth and hasattr(self.env, 'warp_body_mask_buffer'):
-                            self.alg.transition.gt_body_mask = self.env.warp_body_mask_buffer.clone().to(self.device)
                         self.alg.process_env_step(rewards, dones, infos, next_obs, next_critic_obs, self.amp_obs_frames)
                     else:
-                        if self.use_depth and hasattr(self.env, 'warp_safety_heatmap_buffer'):
-                            self.alg.transition.gt_safety_heatmap = self.env.warp_safety_heatmap_buffer.clone().to(self.device)
                         self.alg.process_env_step(rewards, dones, infos, next_obs, next_critic_obs)
 
                     # process trajectory history

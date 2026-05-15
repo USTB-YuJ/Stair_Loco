@@ -34,7 +34,7 @@ class G1_16Dof_Loco_Cfg( LeggedRobotCfg ):
         max_error = 0.1 # for fast
 
         edge_width_thresh = 0
-        horizontal_scale = 0.1 #  0.1 [m] influence computation time by a lot
+        horizontal_scale = 0.05 #  0.1 [m] influence computation time by a lot
         vertical_scale = 0.005 # [m]
         border_size = 5 # [m]
         height = [0.02, 0.06]
@@ -53,7 +53,7 @@ class G1_16Dof_Loco_Cfg( LeggedRobotCfg ):
         dynamic_friction = 1.0
         restitution = 0.
         measure_heights = True
-        visualize_safety_map = False  # 3D terrain safety overlay
+        visualize_safety_map = True  # 3D terrain safety overlay
         safety_map_sample_spacing = 0.05
         measured_points_x = [-0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1, 0., 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8] # 1mx1.6m rectangle (without center line)
         measured_points_y = [-0.5, -0.4, -0.3, -0.2, -0.1, 0., 0.1, 0.2, 0.3, 0.4, 0.5]
@@ -287,7 +287,7 @@ class G1_16Dof_Loco_Cfg( LeggedRobotCfg ):
             cheat = -2
             feet_edge = -0.5
             y_offset_pen = -0.5
-            foot_safety = 1.0
+            foot_safety = 5.0
 
         feet_contact_force_range = [200. , 600.]
 

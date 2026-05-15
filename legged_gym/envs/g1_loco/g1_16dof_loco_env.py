@@ -55,6 +55,7 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
 
     def reset_idx(self, env_ids):
         super().reset_idx(env_ids)
+        self.was_contact[env_ids] = False
         self.last_actions[env_ids] = 0.
         self.last_last_actions[env_ids] = 0.
         self.last_feet_contact_force[env_ids] = 0.
@@ -469,7 +470,7 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
         feet_pos = self.rigid_body_states.view(self.num_envs, self.num_bodies, 13)[:, self.feet_indices, :2]
         safety = self._get_foot_safety(feet_pos.reshape(-1, 2)).reshape(self.num_envs, 2)
         self.was_contact = contact_now
-        return (safety * contact_moment.float()).sum(dim=-1)
+        return (2.0 * (safety - 0.5) * contact_moment.float()).sum(dim=-1)
 
     def _reward_y_offset_pen(self):
         pen = torch.abs(self.root_states[:, 1] - self.origin_y) * torch.logical_and(self.env_class != 0, self.env_class != 1)

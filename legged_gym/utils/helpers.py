@@ -176,12 +176,18 @@ class PolicyExporterDepth(torch.nn.Module):
         super().__init__()
         self.actor = copy.deepcopy(actor_critic.actor)
         self.history_encoder = copy.deepcopy(actor_critic.history_encoder)
-        self.depth_encoder = copy.deepcopy(actor_critic.depth_encoder)
+        self.depth_base_backbone = copy.deepcopy(actor_critic.depth_encoder.base_backbone)
+        self.depth_gru = copy.deepcopy(actor_critic.depth_encoder.gru)
+        self.depth_mlp = copy.deepcopy(actor_critic.depth_encoder.mlp)
 
     def forward(self, obs, history, depth):
         history = history.flatten(1)
         his_feature = self.history_encoder(history)
-        depth_feature, _ = self.depth_encoder(depth)
+
+        depth_latent, _ = self.depth_base_backbone(depth.flatten(0, 1))
+        depth_latent = depth_latent.reshape(depth.size(0), depth.size(1), -1)
+        _, hidden = self.depth_gru(depth_latent)
+        depth_feature = self.depth_mlp(torch.cat([hidden[-1], depth_latent[:, -1]], dim=-1))
         actor_input = torch.cat([obs, his_feature, depth_feature], dim=-1)
         return self.actor(actor_input)
     
