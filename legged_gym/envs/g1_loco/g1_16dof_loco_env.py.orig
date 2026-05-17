@@ -178,54 +178,6 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
         edge_label = torch.zeros_like(safety_label)
         return safety_label, edge_label
 
-    def _sample_safety_boxes(self, centers_xy, dir_xy, normal_xy, length, width, samples_l, samples_w):
-        n = centers_xy.shape[0]
-        if n == 0:
-            return torch.empty(0, dtype=self.terrain_safety_map.dtype, device=self.device)
-        samples_l = max(1, int(samples_l))
-        samples_w = max(1, int(samples_w))
-        l_offsets = torch.linspace(-0.5 * length, 0.5 * length, samples_l, device=self.device)
-        w_offsets = torch.linspace(-0.5 * width, 0.5 * width, samples_w, device=self.device)
-        offsets = (l_offsets.view(1, samples_l, 1, 1) * dir_xy.view(n, 1, 1, 2) +
-                   w_offsets.view(1, 1, samples_w, 1) * normal_xy.view(n, 1, 1, 2)).reshape(n, -1, 2)
-        points = (centers_xy[:, None, :] + offsets).reshape(-1, 2)
-
-        hs = self.terrain.cfg.horizontal_scale
-        border = self.terrain.cfg.border_size
-        map_x, map_y = self.terrain_safety_map.shape
-        px_f = (points[:, 0] + border) / hs
-        py_f = (points[:, 1] + border) / hs
-        inside = (px_f >= 0) & (px_f <= map_x - 1) & (py_f >= 0) & (py_f <= map_y - 1)
-        px = px_f.long().clamp(0, map_x - 1)
-        py = py_f.long().clamp(0, map_y - 1)
-        safety = self.terrain_safety_map[px, py].reshape(n, -1)
-        inside_f = inside.reshape(n, -1).float()
-        denom = inside_f.sum(dim=1).clamp_min(1.0)
-        valid_ratio = inside_f.mean(dim=1)
-        safety_mean = (safety * inside_f).sum(dim=1) / denom
-        return torch.clamp(safety_mean * valid_ratio, 0.0, 1.0)
-
-    def _current_foot_sole_safety(self):
-        rewards_cfg = self.cfg.rewards
-        length = float(getattr(rewards_cfg, "foot_safety_box_length", 0.22))
-        width = float(getattr(rewards_cfg, "foot_safety_box_width", 0.10))
-        samples_l = int(getattr(rewards_cfg, "foot_safety_box_samples_length", 5))
-        samples_w = int(getattr(rewards_cfg, "foot_safety_box_samples_width", 3))
-
-        foot_states = self.rigid_body_states.view(self.num_envs, self.num_bodies, 13)[:, self.feet_indices]
-        centers_xy = foot_states[..., :2].reshape(-1, 2)
-        foot_quat = foot_states[..., 3:7].reshape(-1, 4)
-        local_forward = torch.zeros(centers_xy.shape[0], 3, dtype=centers_xy.dtype, device=self.device)
-        local_forward[:, 0] = 1.0
-        dir_xy = quat_apply(foot_quat, local_forward)[:, :2]
-        dir_norm = torch.norm(dir_xy, dim=1, keepdim=True)
-        yaw = self.rpy[:, 2].repeat_interleave(len(self.feet_indices))
-        fallback_dir = torch.stack((torch.cos(yaw), torch.sin(yaw)), dim=1)
-        dir_xy = torch.where(dir_norm > 1e-4, dir_xy / dir_norm.clamp_min(1e-6), fallback_dir)
-        normal_xy = torch.stack((-dir_xy[:, 1], dir_xy[:, 0]), dim=1)
-        safety = self._sample_safety_boxes(centers_xy, dir_xy, normal_xy, length, width, samples_l, samples_w)
-        return safety.reshape(self.num_envs, len(self.feet_indices))
-
     def _maybe_update_foot_affordance_labels(self, force=False):
         cfg = self._fg_cfg()
         default_interval = int(getattr(getattr(self.cfg, "depth", None), "update_interval", 1))
@@ -1231,10 +1183,9 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
     
     def _reward_foot_safety(self):
         contact_moment = self.foot_touchdown if hasattr(self, "foot_touchdown") else (self.contact_filt & ~self.was_contact)
-        safety = self._current_foot_sole_safety()
-        threshold = float(getattr(self.cfg.rewards, "foot_safety_threshold", 0.55))
-        unsafe_penalty = F.relu(threshold - safety) / max(threshold, 1e-6)
-        return -(unsafe_penalty * contact_moment.float()).sum(dim=-1)
+        feet_pos = self.rigid_body_states.view(self.num_envs, self.num_bodies, 13)[:, self.feet_indices, :2]
+        safety = self._get_foot_safety(feet_pos.reshape(-1, 2)).reshape(self.num_envs, 2)
+        return (2.0 * (safety - 0.5) * contact_moment.float()).sum(dim=-1)
 
     def _reward_footstep_target(self):
         rew = torch.zeros(self.num_envs, device=self.device)

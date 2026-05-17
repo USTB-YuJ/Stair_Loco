@@ -126,6 +126,10 @@ class AMPOnPolicyRunnerMulti:
         self.num_amp_frames = train_cfg['runner']['num_amp_frames']
 
         # init storage and model
+        foot_affordance_shape = None
+        if (self.use_depth and getattr(actor_critic, "enable_foot_affordance", False)
+                and hasattr(self.env, "foot_affordance_labels")):
+            foot_affordance_shape = tuple(self.env.foot_affordance_labels.shape[1:])
         self.alg.init_storage(self.env.num_envs, 
                               self.num_steps_per_env, 
                               [num_actor_obs], 
@@ -134,7 +138,8 @@ class AMPOnPolicyRunnerMulti:
                               self.obs_history_len, 
                               self.env.num_obs,
                               depth_shape=self.depth_shape if self.use_depth else None,
-                              depth_buffer_len=self.env.cfg.depth.buffer_len if self.use_depth else None)
+                              depth_buffer_len=self.env.cfg.depth.buffer_len if self.use_depth else None,
+                              foot_affordance_shape=foot_affordance_shape)
 
         # Log
         self.log_dir = log_dir
@@ -190,16 +195,26 @@ class AMPOnPolicyRunnerMulti:
                 for i in range(self.num_steps_per_env):
                     history = self.trajectory_history
                     current_gt_safety_heatmap = None
+                    current_foot_affordance_labels = None
                     if infos["depth"] is not None:
                         depth_image = infos['depth']
                     if self.use_depth:
                         obs = (obs, depth_image)
-                        if hasattr(self.env, 'warp_safety_heatmap_buffer'):
+                        if self.alg.seg_loss_coef > 0 and hasattr(self.env, 'warp_safety_heatmap_buffer'):
                             current_gt_safety_heatmap = self.env.warp_safety_heatmap_buffer.clone().to(self.device)
+                        if (getattr(self.alg.actor_critic, "enable_foot_affordance", False)
+                                and hasattr(self.env, 'foot_affordance_labels')):
+                            if hasattr(self.env, '_maybe_update_foot_affordance_labels'):
+                                self.env._maybe_update_foot_affordance_labels()
+                            elif hasattr(self.env, '_update_foot_affordance_labels'):
+                                self.env._update_foot_affordance_labels()
+                            current_foot_affordance_labels = self.env.foot_affordance_labels.clone().to(self.device)
 
                     actions = self.alg.act(obs, critic_obs, history)
                     if current_gt_safety_heatmap is not None:
                         self.alg.transition.gt_safety_heatmap = current_gt_safety_heatmap
+                    if current_foot_affordance_labels is not None:
+                        self.alg.transition.foot_affordance_labels = current_foot_affordance_labels
                     obs, privileged_obs, rewards, dones, infos, _, terminal_amp_states, terminal_obs, terminal_critic_obs = self.env.step(actions)
                     
                     critic_obs = privileged_obs if privileged_obs is not None else obs
@@ -306,6 +321,11 @@ class AMPOnPolicyRunnerMulti:
         self.writer.add_scalar('Policy/mean_noise_std', mean_std.item(), locs['it'])
         if hasattr(self.alg, 'last_seg_loss'):
             self.writer.add_scalar('Loss/seg', self.alg.last_seg_loss, locs['it'])
+        if hasattr(self.alg, 'last_affordance_loss'):
+            self.writer.add_scalar('Loss/affordance', self.alg.last_affordance_loss, locs['it'])
+            self.writer.add_scalar('Loss/affordance_safety', self.alg.last_affordance_safety_loss, locs['it'])
+            self.writer.add_scalar('Loss/affordance_edge', self.alg.last_affordance_edge_loss, locs['it'])
+            self.writer.add_scalar('Loss/affordance_target', self.alg.last_affordance_target_loss, locs['it'])
         self.writer.add_scalar('Perf/total_fps', fps, locs['it'])
         self.writer.add_scalar('Perf/collection time', locs['collection_time'], locs['it'])
         self.writer.add_scalar('Perf/learning_time', locs['learn_time'], locs['it'])

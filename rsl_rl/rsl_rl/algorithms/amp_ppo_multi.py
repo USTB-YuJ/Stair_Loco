@@ -65,6 +65,10 @@ class AMPPPOMulti:
                  use_depth=False,
                  default_pos=None,
                  seg_loss_coef=0.1,
+                 affordance_loss_coef=0.1,
+                 affordance_safety_loss_weight=0.5,
+                 affordance_edge_loss_weight=0.25,
+                 affordance_target_loss_weight=0.25,
                  **kwargs
                  ):
         self.use_amp = use_amp
@@ -72,6 +76,10 @@ class AMPPPOMulti:
         self.num_amp_frames = num_amp_frames
         self.use_depth = use_depth
         self.seg_loss_coef = seg_loss_coef
+        self.affordance_loss_coef = affordance_loss_coef
+        self.affordance_safety_loss_weight = affordance_safety_loss_weight
+        self.affordance_edge_loss_weight = affordance_edge_loss_weight
+        self.affordance_target_loss_weight = affordance_target_loss_weight
         self.device = device
         if default_pos is not None: 
             self.default_pos = torch.tensor(default_pos, device=self.device)
@@ -116,9 +124,10 @@ class AMPPPOMulti:
         self.max_grad_norm = max_grad_norm
         self.use_clipped_value_loss = use_clipped_value_loss
 
-    def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, history_len, history_dim, depth_shape=None, depth_buffer_len=None):
+    def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, history_len, history_dim, depth_shape=None, depth_buffer_len=None, foot_affordance_shape=None):
         self.storage = RolloutStorage(
-            num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, self.device, history_len, history_dim, depth_shape, depth_buffer_len)
+            num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, self.device, history_len, history_dim,
+            depth_shape, depth_buffer_len, store_gt_safety_heatmap=self.seg_loss_coef > 0, foot_affordance_shape=foot_affordance_shape)
 
     def test_mode(self):
         self.actor_critic.test()
@@ -199,6 +208,7 @@ class AMPPPOMulti:
         mean_expert_pred = 0
         mean_agent_acc = 0
         mean_demo_acc = 0
+        mean_affordance_loss = 0
         
         if self.actor_critic.is_recurrent:
             generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
@@ -266,10 +276,13 @@ class AMPPPOMulti:
                 mean_demo_acc += demo_acc.mean().item()
         
         for obs_batch, critic_obs_batch, actions_batch, next_obs_batch, next_critic_observations_batch, history_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, \
-            old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch, depth_image_batch, gt_safety_heatmap_batch, *_ in generator:
+            old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch, depth_image_batch, gt_safety_heatmap_batch, foot_affordance_labels_batch, *_ in generator:
 
             aug_obs_batch, history_batch = obs_batch.detach(), history_batch.detach()
             need_seg_masks = self.use_depth and gt_safety_heatmap_batch is not None and self.seg_loss_coef > 0
+            need_affordance_loss = (self.use_depth and foot_affordance_labels_batch is not None and
+                                    self.affordance_loss_coef > 0 and
+                                    getattr(self.actor_critic, "enable_foot_affordance", False))
             if self.use_depth:
                 aug_depth_image_batch = depth_image_batch.detach()
                 self.actor_critic.act(aug_obs_batch, history_batch, aug_depth_image_batch, return_masks=need_seg_masks)
@@ -352,6 +365,47 @@ class AMPPPOMulti:
                     print(f"[SEG_DIAG] pred_mean={pred_masks.mean().item():.4f} gt_mean={gt_safety_heatmap_batch.mean().item():.4f} seg_loss={seg_loss.item():.6f}")
                 loss = loss + self.seg_loss_coef * seg_loss
 
+            if need_affordance_loss:
+                import torch.nn.functional as _F
+                pred_affordance = self.actor_critic._last_affordance_pred
+                labels = foot_affordance_labels_batch.to(pred_affordance.device)
+                target = labels[..., :3]
+                target_mask = labels[..., 3]
+                safety_loss = _F.mse_loss(pred_affordance[..., 0], target[..., 0], reduction='mean')
+                if self.affordance_edge_loss_weight > 0:
+                    edge_loss = _F.mse_loss(pred_affordance[..., 1], target[..., 1], reduction='mean')
+                else:
+                    edge_loss = torch.zeros((), device=pred_affordance.device)
+                if self.affordance_target_loss_weight > 0:
+                    target_sq = torch.square(pred_affordance[..., 2] - target[..., 2]) * target_mask
+                    denom = target_mask.sum().clamp_min(1.0)
+                    target_loss = target_sq.sum() / denom
+                else:
+                    target_loss = torch.zeros((), device=pred_affordance.device)
+                total_affordance_weight = (
+                    self.affordance_safety_loss_weight +
+                    self.affordance_edge_loss_weight +
+                    self.affordance_target_loss_weight)
+                if total_affordance_weight > 0:
+                    affordance_loss = (
+                        self.affordance_safety_loss_weight * safety_loss +
+                        self.affordance_edge_loss_weight * edge_loss +
+                        self.affordance_target_loss_weight * target_loss) / total_affordance_weight
+                else:
+                    affordance_loss = torch.zeros((), device=pred_affordance.device)
+                if not hasattr(self, '_affordance_loss_printed'):
+                    self._affordance_loss_printed = True
+                    print(f"[AFF_DEBUG] affordance_loss enabled: coef={self.affordance_loss_coef}, weights=({self.affordance_safety_loss_weight}, {self.affordance_edge_loss_weight}, {self.affordance_target_loss_weight}), shape={pred_affordance.shape}")
+                self.last_affordance_loss = affordance_loss.item()
+                self.last_affordance_safety_loss = safety_loss.item()
+                self.last_affordance_edge_loss = edge_loss.item()
+                self.last_affordance_target_loss = target_loss.item()
+                self._last_pred_affordance = pred_affordance[:1].detach().cpu()
+                self._last_gt_affordance = labels[:1].detach().cpu()
+                loss = loss + self.affordance_loss_coef * affordance_loss
+            else:
+                affordance_loss = None
+
             # Gradient step
             self.optimizer.zero_grad()
             loss.backward()
@@ -371,6 +425,8 @@ class AMPPPOMulti:
             
             mean_value_loss += value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()
+            if affordance_loss is not None:
+                mean_affordance_loss += affordance_loss.item()
                 
         num_updates = self.num_learning_epochs * self.num_mini_batches
         mean_value_loss /= num_updates
@@ -381,6 +437,8 @@ class AMPPPOMulti:
         mean_expert_pred /= num_updates
         mean_agent_acc /= num_updates
         mean_demo_acc /= num_updates
+        mean_affordance_loss /= num_updates
+        self.last_mean_affordance_loss = mean_affordance_loss
         
         self.storage.clear()
 

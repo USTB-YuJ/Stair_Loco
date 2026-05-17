@@ -52,6 +52,7 @@ class RolloutStorageEX:
             self.history = None
             self.depth_image = None
             self.gt_safety_heatmap = None
+            self.foot_affordance_labels = None
             self.next_observations = None
             self.next_critic_observations = None
         
@@ -60,15 +61,20 @@ class RolloutStorageEX:
 
     def __init__(self, num_envs, num_transitions_per_env, obs_shape, privileged_obs_shape, actions_shape, 
                  device='cpu', history_len = 10, history_dim=45, depth_shape=None, depth_buffer_len=None, 
-                 next_obs_shape=None, num_critics=1, num_experts=1):
+                 next_obs_shape=None, num_critics=1, num_experts=1, store_gt_safety_heatmap=True,
+                 foot_affordance_shape=None):
 
         self.device = device
         self.depth_image = None
         self.gt_safety_heatmap = None
+        self.foot_affordance_labels = None
         if depth_shape is not None:
             assert isinstance(depth_shape, tuple) and len(depth_shape) == 2
             self.depth_image = torch.zeros(num_transitions_per_env, num_envs, depth_buffer_len, *depth_shape, device=self.device)
-            self.gt_safety_heatmap = torch.zeros(num_transitions_per_env, num_envs, depth_buffer_len, *depth_shape, device=self.device)
+            if store_gt_safety_heatmap:
+                self.gt_safety_heatmap = torch.zeros(num_transitions_per_env, num_envs, depth_buffer_len, *depth_shape, device=self.device)
+        if foot_affordance_shape is not None:
+            self.foot_affordance_labels = torch.zeros(num_transitions_per_env, num_envs, *foot_affordance_shape, device=self.device)
 
         self.obs_shape = obs_shape
         self.privileged_obs_shape = privileged_obs_shape
@@ -128,6 +134,8 @@ class RolloutStorageEX:
             self.depth_image[self.step].copy_(transition.depth_image)
         if self.gt_safety_heatmap is not None and transition.gt_safety_heatmap is not None:
             self.gt_safety_heatmap[self.step].copy_(transition.gt_safety_heatmap)
+        if self.foot_affordance_labels is not None and transition.foot_affordance_labels is not None:
+            self.foot_affordance_labels[self.step].copy_(transition.foot_affordance_labels)
         self.rewards[self.step].copy_(transition.rewards.view(-1, self.num_critics))
         self.dones[self.step].copy_(transition.dones.view(-1, 1))
         self.values[self.step].copy_(transition.values)
@@ -193,6 +201,7 @@ class RolloutStorageEX:
         history = self.history.flatten(0, 1)
         depth_image = self.depth_image.flatten(0, 1) if self.depth_image is not None else None
         gt_mask = self.gt_safety_heatmap.flatten(0, 1) if self.gt_safety_heatmap is not None else None
+        foot_affordance_labels = self.foot_affordance_labels.flatten(0, 1) if self.foot_affordance_labels is not None else None
         gate_weights = self.gate_weights.flatten(0, 1) if self.gate_weights is not None else None
 
         if self.privileged_observations is not None:
@@ -230,10 +239,11 @@ class RolloutStorageEX:
                 history_batch = history[batch_idx]
                 depth_image_batch = depth_image[batch_idx] if depth_image is not None else None
                 gt_safety_heatmap_batch = gt_mask[batch_idx] if gt_mask is not None else None
+                foot_affordance_labels_batch = foot_affordance_labels[batch_idx] if foot_affordance_labels is not None else None
                 gate_weights_batch = gate_weights[batch_idx] if gate_weights is not None else None
                 
                 yield obs_batch, critic_observations_batch, actions_batch, next_obs_batch, next_critic_observations_batch, history_batch, target_values_batch, advantages_batch, returns_batch, \
-                       old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (None, None), None, depth_image_batch, gt_safety_heatmap_batch
+                       old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (None, None), None, depth_image_batch, gt_safety_heatmap_batch, foot_affordance_labels_batch
 
     # for RNNs only
     def reccurent_mini_batch_generator(self, num_mini_batches, num_epochs=8):

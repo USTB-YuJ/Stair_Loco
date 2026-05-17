@@ -85,6 +85,63 @@ class SegDecoder(nn.Module):
         return self.decoder(conv_feat).squeeze(1)  # [B, H, W]
 
 
+class FootAffordanceHead(nn.Module):
+    def __init__(self, num_actor_obs, his_latent_dim, depth_dim=128, token_dim=32, hidden_dim=64,
+                 candidate_x=(0.10, 0.25, 0.40, 0.55, 0.70),
+                 candidate_y_offsets=(-0.08, 0.0, 0.08),
+                 foot_lateral_offset=0.11):
+        super().__init__()
+        self.token_dim = token_dim
+        activation = nn.ELU()
+
+        self.body_encoder = nn.Sequential(
+            nn.Linear(num_actor_obs + his_latent_dim, 128),
+            activation,
+            nn.Linear(128, 64),
+            activation,
+        )
+        self.scorer = nn.Sequential(
+            nn.Linear(depth_dim + 64 + 3, hidden_dim),
+            activation,
+            nn.Linear(hidden_dim, hidden_dim),
+            activation,
+        )
+        self.pred_head = nn.Linear(hidden_dim, 3)
+        self.token_head = nn.Sequential(nn.Linear(hidden_dim, token_dim), activation)
+
+        candidate_x = [float(x) for x in candidate_x]
+        candidate_y_offsets = [float(y) for y in candidate_y_offsets]
+        candidates = []
+        for side in (1.0, -1.0):
+            side_candidates = []
+            for x in candidate_x:
+                for y_off in candidate_y_offsets:
+                    side_candidates.append([x, side * float(foot_lateral_offset) + y_off, side])
+            candidates.append(side_candidates)
+        self.register_buffer("candidate_geometry", torch.tensor(candidates, dtype=torch.float32))
+
+    def forward(self, observations: torch.Tensor, his_feature: torch.Tensor, depth_feature: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        body_feature = self.body_encoder(torch.cat((observations, his_feature), dim=-1))
+        B = observations.shape[0]
+        candidate_geometry = self.candidate_geometry.to(observations.device)
+        sides = candidate_geometry.shape[0]
+        num_candidates = candidate_geometry.shape[1]
+
+        depth_expand = depth_feature[:, None, None, :].expand(B, sides, num_candidates, depth_feature.shape[-1])
+        body_expand = body_feature[:, None, None, :].expand(B, sides, num_candidates, body_feature.shape[-1])
+        geom_expand = candidate_geometry[None, :, :, :].expand(B, sides, num_candidates, candidate_geometry.shape[-1])
+        features = torch.cat((depth_expand, body_expand, geom_expand), dim=-1)
+
+        hidden = self.scorer(features.reshape(B * sides * num_candidates, -1))
+        pred = torch.sigmoid(self.pred_head(hidden)).reshape(B, sides, num_candidates, 3)
+        token_values = self.token_head(hidden).reshape(B, sides, num_candidates, self.token_dim)
+
+        # Safety-only pooling keeps the token focused on deployable local stepability.
+        weights = torch.softmax(pred[..., 0], dim=-1)
+        tokens = torch.sum(weights.unsqueeze(-1) * token_values, dim=2)
+        return tokens.reshape(B, sides * self.token_dim), pred
+
+
 class StackDepthEncoder(nn.Module):
     def __init__(self, base_backbone: DepthOnlyFCBackbone58x87, buffer_len=None,
                  temporal_channels=64, output_dim=128) -> None:
@@ -179,6 +236,12 @@ class ActorCriticDepth(nn.Module):
                         depth_temporal_channels = 64,
                         depth_gru_hidden_dim = 128,
                         depth_gru_num_layers = 1,
+                        enable_foot_affordance = False,
+                        affordance_token_dim = 32,
+                        affordance_hidden_dim = 64,
+                        affordance_candidate_x = (0.10, 0.25, 0.40, 0.55, 0.70),
+                        affordance_candidate_y_offsets = (-0.08, 0.0, 0.08),
+                        affordance_foot_lateral_offset = 0.11,
                         activation='elu',
                         init_noise_std=1.0,
                         max_grad_norm=10.0,
@@ -189,7 +252,9 @@ class ActorCriticDepth(nn.Module):
         activation = get_activation(activation)
 
         self.his_latent_dim = his_latent_dim
-        self.max_grad_norm = max_grad_norm        
+        self.max_grad_norm = max_grad_norm
+        self.enable_foot_affordance = enable_foot_affordance
+        self.affordance_token_dim = affordance_token_dim
 
         # depth encoder
         depth_backbone = DepthOnlyFCBackbone58x87(output_dim=128, output_activation=activation)
@@ -211,6 +276,20 @@ class ActorCriticDepth(nn.Module):
             raise ValueError(f"Unsupported depth_encoder_type: {depth_encoder_type}")
 
         mlp_input_dim_a = num_actor_obs + his_latent_dim + depth_backbone.output_dim
+        if self.enable_foot_affordance:
+            self.foot_affordance_head = FootAffordanceHead(
+                num_actor_obs=num_actor_obs,
+                his_latent_dim=his_latent_dim,
+                depth_dim=depth_backbone.output_dim,
+                token_dim=affordance_token_dim,
+                hidden_dim=affordance_hidden_dim,
+                candidate_x=affordance_candidate_x,
+                candidate_y_offsets=affordance_candidate_y_offsets,
+                foot_lateral_offset=affordance_foot_lateral_offset,
+            )
+            mlp_input_dim_a += 2 * affordance_token_dim
+        else:
+            self.foot_affordance_head = None
         mlp_input_dim_c = num_critic_obs + his_latent_dim
         
         # History Encoder
@@ -286,22 +365,29 @@ class ActorCriticDepth(nn.Module):
         mean = self.actor(observations)
         self.distribution = Normal(mean, mean*0. + self.std)
 
+    def _build_actor_input(self, observations, his_feature, depth_feature):
+        if self.enable_foot_affordance:
+            affordance_tokens, self._last_affordance_pred = self.foot_affordance_head(observations, his_feature, depth_feature)
+            return torch.cat((observations, his_feature, depth_feature, affordance_tokens), dim=-1)
+        self._last_affordance_pred = None
+        return torch.cat((observations, his_feature, depth_feature), dim=-1)
+
     def act(self, observations, history, depth, return_masks: bool = False, **kwargs):
         history = history.flatten(1)
         his_feature = self.history_encoder(history)
         depth_feature, self._last_pred_masks = self.depth_encoder(depth, return_masks=return_masks)
-        actor_input = torch.cat((observations, his_feature, depth_feature), dim=-1)
+        actor_input = self._build_actor_input(observations, his_feature, depth_feature)
         self.update_distribution(actor_input)
         return self.distribution.sample()
     
     def get_actions_log_prob(self, actions):
         return self.distribution.log_prob(actions).sum(dim=-1)
 
-    def act_inference(self, observations, history, depth, return_masks: bool = True, **kwargs):
+    def act_inference(self, observations, history, depth, return_masks: bool = False, **kwargs):
         history = history.flatten(1)
         his_feature = self.history_encoder(history)
         depth_feature, self._last_pred_masks = self.depth_encoder(depth, return_masks=return_masks)
-        actor_input = torch.cat((observations, his_feature, depth_feature), dim=-1)
+        actor_input = self._build_actor_input(observations, his_feature, depth_feature)
         actions_mean = self.actor(actor_input)
         return actions_mean
     

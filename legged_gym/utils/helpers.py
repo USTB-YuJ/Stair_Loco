@@ -179,6 +179,9 @@ class PolicyExporterDepth(torch.nn.Module):
         self.depth_base_backbone = copy.deepcopy(actor_critic.depth_encoder.base_backbone)
         self.depth_gru = copy.deepcopy(actor_critic.depth_encoder.gru)
         self.depth_mlp = copy.deepcopy(actor_critic.depth_encoder.mlp)
+        self.enable_foot_affordance = getattr(actor_critic, "enable_foot_affordance", False)
+        if self.enable_foot_affordance:
+            self.foot_affordance_head = copy.deepcopy(actor_critic.foot_affordance_head)
 
     def forward(self, obs, history, depth):
         history = history.flatten(1)
@@ -188,7 +191,11 @@ class PolicyExporterDepth(torch.nn.Module):
         depth_latent = depth_latent.reshape(depth.size(0), depth.size(1), -1)
         _, hidden = self.depth_gru(depth_latent)
         depth_feature = self.depth_mlp(torch.cat([hidden[-1], depth_latent[:, -1]], dim=-1))
-        actor_input = torch.cat([obs, his_feature, depth_feature], dim=-1)
+        if self.enable_foot_affordance:
+            affordance_tokens, _ = self.foot_affordance_head(obs, his_feature, depth_feature)
+            actor_input = torch.cat([obs, his_feature, depth_feature, affordance_tokens], dim=-1)
+        else:
+            actor_input = torch.cat([obs, his_feature, depth_feature], dim=-1)
         return self.actor(actor_input)
     
     def export(self, path):

@@ -221,67 +221,74 @@ class LeggedRobot(BaseTask):
         gym2robot = quat_pos_2_mat_torch(base_pos_w, base_camera_quat).to(self.device)
         self._warp2cam = self.warp_renderer.warp2gym.unsqueeze(0).repeat([base_pos_w.shape[0],1,1]) @ gym2robot @ self.warp_renderer.robot2cam
 
-        self._depth_stage_raw = depth_images.clone()
+        store_depth_debug = bool(getattr(self.cfg.depth, "store_warp_depth_debug_stages", False))
+        compute_safety_heatmap = bool(getattr(self.cfg.depth, "compute_warp_safety_heatmap", True)) and hasattr(self, "terrain_safety_map")
+        if store_depth_debug:
+            self._depth_stage_raw = depth_images.clone()
 
-        # generate GT safety heatmap from depth via precomputed safety map
-        depth_safety = depth_images.clone()
-        depth_safety = depth_image_preprocessing(depth_safety, near_plane=self.cfg.depth.near_clip, far_plane=self.cfg.depth.far_clip, depth_scale=1.)
-        depth_safety_m = depth_safety  # meters
+        safety_heatmap = None
+        if compute_safety_heatmap:
+            # generate GT safety heatmap from depth via precomputed safety map
+            depth_safety = depth_images.clone()
+            depth_safety = depth_image_preprocessing(depth_safety, near_plane=self.cfg.depth.near_clip, far_plane=self.cfg.depth.far_clip, depth_scale=1.)
+            depth_safety_m = depth_safety  # meters
 
-        # camera intrinsics (reuse existing logic)
-        fovy_offset = float(self.warp_renderer.fovy_dist_offset[0].item())
-        tan_half = 1.0 / (fovy_offset + 1.0)
-        H_orig, W_orig = depth_safety.shape[1], depth_safety.shape[2]
-        fy = (H_orig / 2.0) / tan_half
-        fx = fy
-        cx = W_orig / 2.0
-        cy = H_orig / 2.0
+            # camera intrinsics (reuse existing logic)
+            fovy_offset = float(self.warp_renderer.fovy_dist_offset[0].item())
+            tan_half = 1.0 / (fovy_offset + 1.0)
+            H_orig, W_orig = depth_safety.shape[1], depth_safety.shape[2]
+            fy = (H_orig / 2.0) / tan_half
+            fx = fy
+            cx = W_orig / 2.0
+            cy = H_orig / 2.0
 
-        v, u = torch.meshgrid(torch.arange(H_orig, device=self.device, dtype=torch.float32),
-                              torch.arange(W_orig, device=self.device, dtype=torch.float32), indexing='ij')
-        z = depth_safety_m
-        x_c = (u - cx) / fx * z
-        y_c = (v - cy) / fy * z
+            v, u = torch.meshgrid(torch.arange(H_orig, device=self.device, dtype=torch.float32),
+                                  torch.arange(W_orig, device=self.device, dtype=torch.float32), indexing='ij')
+            z = depth_safety_m
+            x_c = (u - cx) / fx * z
+            y_c = (v - cy) / fy * z
 
-        warp2gym_R = self.warp_renderer.warp2gym[:3, :3]
-        gym_from_warp_R = warp2gym_R.T
-        cam_pos_warp = self._warp2cam[:, :3, 3]
-        cam_pos_world = (gym_from_warp_R @ cam_pos_warp.T).T
-        cam_rot_warp = self._warp2cam[:, :3, :3]
-        cam_rot_world = gym_from_warp_R.unsqueeze(0) @ cam_rot_warp
+            warp2gym_R = self.warp_renderer.warp2gym[:3, :3]
+            gym_from_warp_R = warp2gym_R.T
+            cam_pos_warp = self._warp2cam[:, :3, 3]
+            cam_pos_world = (gym_from_warp_R @ cam_pos_warp.T).T
+            cam_rot_warp = self._warp2cam[:, :3, :3]
+            cam_rot_world = gym_from_warp_R.unsqueeze(0) @ cam_rot_warp
 
-        pts_cam_warp = torch.stack([z, -x_c, -y_c], dim=-1)
-        pts_world = (cam_rot_world[:, None, None] @ pts_cam_warp.unsqueeze(-1)).squeeze(-1) + cam_pos_world[:, None, None]
+            pts_cam_warp = torch.stack([z, -x_c, -y_c], dim=-1)
+            pts_world = (cam_rot_world[:, None, None] @ pts_cam_warp.unsqueeze(-1)).squeeze(-1) + cam_pos_world[:, None, None]
 
-        hs = self.terrain.cfg.horizontal_scale
-        border = self.terrain.cfg.border_size
-        map_x, map_y = self.terrain_safety_map.shape
-        px = ((pts_world[..., 0] + border) / hs).long().clamp(0, map_x - 1)
-        py = ((pts_world[..., 1] + border) / hs).long().clamp(0, map_y - 1)
+            hs = self.terrain.cfg.horizontal_scale
+            border = self.terrain.cfg.border_size
+            map_x, map_y = self.terrain_safety_map.shape
+            px = ((pts_world[..., 0] + border) / hs).long().clamp(0, map_x - 1)
+            py = ((pts_world[..., 1] + border) / hs).long().clamp(0, map_y - 1)
 
-        safety_heatmap = self.terrain_safety_map[px, py]  # [B, H_orig, W_orig], x indexes rows and y indexes cols
-        # height_diff filter: exclude body pixels and vertical surfaces
-        pts_xy_flat = pts_world[..., :2].reshape(-1, 2)
-        terrain_h = self._query_height_at_points(pts_xy_flat).reshape(pts_world.shape[0], pts_world.shape[1], pts_world.shape[2])
-        height_diff = torch.abs(pts_world[..., 2] - terrain_h)
-        valid = (depth_safety_m > 0) & (height_diff < 0.15)
-        if not hasattr(self, '_valid_diag_printed'):
-            self._valid_diag_printed = True
-            vf = valid.float().mean().item()
-            hd = height_diff[valid].mean().item() if valid.any() else 0
-            sm = safety_heatmap[valid].mean().item() if valid.any() else 0
-            print(f"[GT_HEATMAP] valid_pixels={vf:.3f} mean_height_diff={hd:.4f}m mean_safety={sm:.4f}")
-        safety_heatmap = safety_heatmap * valid.float()
+            safety_heatmap = self.terrain_safety_map[px, py]  # [B, H_orig, W_orig], x indexes rows and y indexes cols
+            # height_diff filter: exclude body pixels and vertical surfaces
+            pts_xy_flat = pts_world[..., :2].reshape(-1, 2)
+            terrain_h = self._query_height_at_points(pts_xy_flat).reshape(pts_world.shape[0], pts_world.shape[1], pts_world.shape[2])
+            height_diff = torch.abs(pts_world[..., 2] - terrain_h)
+            valid = (depth_safety_m > 0) & (height_diff < 0.15)
+            if not hasattr(self, '_valid_diag_printed'):
+                self._valid_diag_printed = True
+                vf = valid.float().mean().item()
+                hd = height_diff[valid].mean().item() if valid.any() else 0
+                sm = safety_heatmap[valid].mean().item() if valid.any() else 0
+                print(f"[GT_HEATMAP] valid_pixels={vf:.3f} mean_height_diff={hd:.4f}m mean_safety={sm:.4f}")
+            safety_heatmap = safety_heatmap * valid.float()
 
 
         # add noise to raw depth images
         if self.cfg.depth.gaussian_noise:
             depth_images += torch.randn((self.num_envs, *self.cfg.depth.original), device=self.device) * self.cfg.depth.gaussian_noise_std
-        self._depth_stage_gaussian = depth_images.clone()
+        if store_depth_debug:
+            self._depth_stage_gaussian = depth_images.clone()
 
         if self.cfg.depth.dis_noise != 0:
             depth_images += self.depth_dis_noise[..., None]
-        self._depth_stage_dis = depth_images.clone()
+        if store_depth_debug:
+            self._depth_stage_dis = depth_images.clone()
 
         if self.cfg.depth.edge_invalid_noise:
             w = self.cfg.depth.edge_invalid_width
@@ -289,7 +296,8 @@ class LeggedRobot(BaseTask):
             depth_images[:, -w:, :] = 0.
             depth_images[:, :, :w] = 0.
             depth_images[:, :, -w:] = 0.
-        self._depth_stage_edge = depth_images.clone()
+        if store_depth_debug:
+            self._depth_stage_edge = depth_images.clone()
 
         if self.cfg.depth.random_invalid_patch:
             H, W = depth_images.shape[-2], depth_images.shape[-1]
@@ -299,7 +307,8 @@ class LeggedRobot(BaseTask):
                 py = torch.randint(0, H - ph + 1, (1,)).item()
                 px = torch.randint(0, W - pw + 1, (1,)).item()
                 depth_images[:, py:py+ph, px:px+pw] = 0.
-        self._depth_stage_patch = depth_images.clone()
+        if store_depth_debug:
+            self._depth_stage_patch = depth_images.clone()
 
         if self.cfg.depth.depth_discontinuity_noise:
             # invalidate pixels near depth discontinuities (flying pixel artifact)
@@ -322,14 +331,16 @@ class LeggedRobot(BaseTask):
                     edge_mask.float().unsqueeze(1), kernel_size=k, stride=1, padding=r
                 ).squeeze(1).bool()
             depth_images[edge_mask] = 0.
-        self._depth_stage_discontinuity = depth_images.clone()
+        if store_depth_debug:
+            self._depth_stage_discontinuity = depth_images.clone()
 
         # clip & normalize depth images
         depth_images = depth_image_preprocessing(depth_images, near_plane=self.cfg.depth.near_clip, far_plane=self.cfg.depth.far_clip, depth_scale=1.)
         depth_images = (depth_images - self.cfg.depth.near_clip) / (
             self.cfg.depth.far_clip - self.cfg.depth.near_clip
         ) - 0.5
-        self._depth_stage_normalized = depth_images.clone()
+        if store_depth_debug:
+            self._depth_stage_normalized = depth_images.clone()
 
         # gaussian filter
         if self.cfg.depth.gaussian_filter:
@@ -340,7 +351,8 @@ class LeggedRobot(BaseTask):
         depth_norm_full = depth_images
 
         # save pre-crop depth for visualization
-        self._raw_warp_depth = depth_norm_full.clone()
+        if store_depth_debug:
+            self._raw_warp_depth = depth_norm_full.clone()
         depth_images = self._crop_and_resize_depth_images(depth_norm_full)
 
         init_flag = self.episode_length_buf <= 1
@@ -348,10 +360,11 @@ class LeggedRobot(BaseTask):
         self.warp_depth_buffer = torch.cat([self.warp_depth_buffer[:, 1:], depth_images.unsqueeze(1)], dim=1)
         self.warp_depth_buffer[init_flag] = torch.stack([depth_images] * self.cfg.depth.buffer_len, dim=1)[init_flag]
 
-        # safety heatmap already computed from clean depth above (before noise)
-        safety_heatmap_resized = self._crop_and_resize_depth_images(safety_heatmap)
-        self.warp_safety_heatmap_buffer = torch.cat([self.warp_safety_heatmap_buffer[:, 1:], safety_heatmap_resized.unsqueeze(1)], dim=1)
-        self.warp_safety_heatmap_buffer[init_flag] = torch.stack([safety_heatmap_resized] * self.cfg.depth.buffer_len, dim=1)[init_flag]
+        if compute_safety_heatmap:
+            # safety heatmap already computed from clean depth above (before noise)
+            safety_heatmap_resized = self._crop_and_resize_depth_images(safety_heatmap)
+            self.warp_safety_heatmap_buffer = torch.cat([self.warp_safety_heatmap_buffer[:, 1:], safety_heatmap_resized.unsqueeze(1)], dim=1)
+            self.warp_safety_heatmap_buffer[init_flag] = torch.stack([safety_heatmap_resized] * self.cfg.depth.buffer_len, dim=1)[init_flag]
 
 
 

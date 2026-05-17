@@ -78,6 +78,11 @@ def play(args):
 
     env_cfg.env.test = True
 
+    if hasattr(env_cfg, 'footstep_guidance'):
+        env_cfg.footstep_guidance.enable_footstep_guidance = False
+        env_cfg.footstep_guidance.visualize_footstep_targets = False
+        env_cfg.footstep_guidance.save_topdown_debug = False
+
     env_cfg.depth.y_angle = [48, 48]  # aligned with G1 config (was 70)
     env_cfg.depth.x_angle = [0, 0]
     env_cfg.depth.z_angle = [0, 0]
@@ -86,6 +91,8 @@ def play(args):
     env_cfg.depth.z_pos_range = [0, 0]
     env_cfg.depth.use_camera = False
     env_cfg.depth.warp_camera = True
+    env_cfg.depth.compute_warp_safety_heatmap = True
+    env_cfg.depth.store_warp_depth_debug_stages = True
     env_cfg.depth.dis_noise = 0
     env_cfg.depth.gaussian_noise = False
     env_cfg.depth.gaussian_noise_std = 0.05
@@ -111,6 +118,11 @@ def play(args):
     env_cfg.commands.ranges.ang_vel_yaw = [0, 0]
     env_cfg.commands.heading_command = False
     env_cfg.commands.resampling_time = 100
+    if hasattr(env_cfg, 'footstep_guidance') and env_cfg.footstep_guidance.enable_footstep_guidance:
+        env_cfg.commands.ranges.lin_vel_x = [0.0, 0.8]
+        env_cfg.commands.ranges.lin_vel_y = [-0.5, 0.5]
+        env_cfg.commands.ranges.heading = [-3.14, 3.14]
+        env_cfg.commands.ranges.ang_vel_yaw = [-1.0, 1.0]
 
     env_cfg.terrain.terrain_dict = {"roughness": 0., 
                                     "slope": 0.,
@@ -319,7 +331,7 @@ if __name__ == '__main__':
     args = get_args()
     # args.task = "h1_loco"
     args.task = "g1_16dof_loco"
-    args.load_run = "/root/gpufree-data/workspace/more/logs/g1_16dof_loco/May15_00-10-08_"
+    args.load_run = "/root/gpufree-data/workspace/more/logs/g1_16dof_loco/May17_00-22-50_"
     args.record = True
     args.headless = not args.record  # need viewer for recording
     args.save_depth = False

@@ -324,11 +324,6 @@ class G1_16Dof_Loco_Cfg( LeggedRobotCfg ):
         soft_dof_pos_limit = 0.9
         feet_min_lateral_distance_target = 0.14
         clearance_height_target = -0.6
-        foot_safety_threshold = 0.55
-        foot_safety_box_length = 0.22
-        foot_safety_box_width = 0.10
-        foot_safety_box_samples_length = 5
-        foot_safety_box_samples_width = 3
         class scales:
             tracking_lin_vel = 2
             tracking_ang_vel = 2
