@@ -254,7 +254,11 @@ class G1_16Dof_Loco_Cfg( LeggedRobotCfg ):
             heading = [-3.14, 3.14]
 
     class footstep_guidance:
+        # Path-only stair command guidance is enabled for the current ablation.
+        # Full footstep target/tread logic remains disabled until reworked.
+        enable_stair_path_guidance = True
         enable_footstep_guidance = False
+        visualize_stair_path = False
         visualize_footstep_targets = False
         visualize_affordance_candidates = False
         save_topdown_debug = False
@@ -268,6 +272,7 @@ class G1_16Dof_Loco_Cfg( LeggedRobotCfg ):
         path_end_margin = 0.8
         path_y_margin = 0.45
         path_end_y_range = 0.35
+        path_straight_line = True
         path_forward_speed = 0.35
         path_lateral_gain = 0.8
         path_lateral_speed_clip = 0.35
@@ -324,11 +329,16 @@ class G1_16Dof_Loco_Cfg( LeggedRobotCfg ):
         soft_dof_pos_limit = 0.9
         feet_min_lateral_distance_target = 0.14
         clearance_height_target = -0.6
-        foot_safety_threshold = 0.55
+        foot_safety_threshold = 0.5
         foot_safety_box_length = 0.22
         foot_safety_box_width = 0.10
         foot_safety_box_samples_length = 5
         foot_safety_box_samples_width = 3
+        downstairs_com_lookahead = [0.25, 0.40, 0.55]
+        downstairs_com_drop_threshold = 0.03
+        downstairs_com_gate_temperature = 0.02
+        downstairs_com_max_ahead = -0.05
+        downstairs_com_ahead_margin = 0.10
         class scales:
             tracking_lin_vel = 2
             tracking_ang_vel = 2
@@ -341,8 +351,8 @@ class G1_16Dof_Loco_Cfg( LeggedRobotCfg ):
             ang_vel_xy = -0.05
             orientation = -5.0 #-2.0
             joint_power = -2.5e-5
-            feet_clearance = -0.25
-            feet_stumble = -1.0
+            feet_clearance = -0.35
+            feet_stumble = -3.0
             torques = -1e-5
             arm_joint_deviation = -0.5
             hip_joint_deviation = -0.5
@@ -362,7 +372,9 @@ class G1_16Dof_Loco_Cfg( LeggedRobotCfg ):
             feet_edge = -0.5
             y_offset_pen = -0.5
             foot_safety = 1.0
+            foot_safety_penalty = -1.0
             footstep_target = 0.0
+            downstairs_com_back = -1.0
             footstep_skip = 0.0
 
         feet_contact_force_range = [200. , 600.]

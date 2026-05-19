@@ -61,7 +61,9 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
         if self.viewer and getattr(self.cfg.terrain, "visualize_safety_map", False):
             self._draw_terrain_safety_overlay()
         if (self.viewer and self.enable_viewer_sync and self.debug_viz and
-                self._fg_enabled() and getattr(self._fg_cfg(), "visualize_footstep_targets", False)):
+                self._path_guidance_enabled() and
+                (getattr(self._fg_cfg(), "visualize_stair_path", False) or
+                 getattr(self._fg_cfg(), "visualize_footstep_targets", False))):
             self._draw_footstep_targets()
         if (self.viewer and self.enable_viewer_sync and self.debug_viz and
                 self._fg_enabled() and getattr(self._fg_cfg(), "visualize_affordance_candidates", False)):
@@ -70,6 +72,13 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
 
     def _fg_cfg(self):
         return getattr(self.cfg, "footstep_guidance", None)
+
+    def _path_guidance_enabled(self):
+        cfg = self._fg_cfg()
+        return cfg is not None and (
+            getattr(cfg, "enable_stair_path_guidance", False) or
+            getattr(cfg, "enable_footstep_guidance", False)
+        )
 
     def _fg_enabled(self):
         cfg = self._fg_cfg()
@@ -290,7 +299,7 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
 
     def _footstep_stair_mask(self, env_ids=None):
         mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        if self._fg_enabled() and hasattr(self, "env_class"):
+        if self._path_guidance_enabled() and hasattr(self, "env_class"):
             stair_class = int(getattr(self._fg_cfg(), "stair_env_class", 4))
             mask = self.env_class.long() == stair_class
         if env_ids is None:
@@ -340,12 +349,13 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
         if hasattr(self, "foot_affordance_labels"):
             self.foot_affordance_labels[env_ids] = 0.
             self._foot_affordance_last_update = -1000000
-        if not self._fg_enabled() or not hasattr(self, "terrain"):
+        if not self._path_guidance_enabled() or not hasattr(self, "terrain"):
             return
         stair_env_ids = env_ids[self._footstep_stair_mask(env_ids)]
         for env_id in stair_env_ids.detach().cpu().tolist():
             self._build_footstep_path_for_env(env_id)
-            self._build_footstep_targets_for_env(env_id)
+            if self._fg_enabled():
+                self._build_footstep_targets_for_env(env_id)
         if stair_env_ids.numel() > 0:
             self._update_path_commands(stair_env_ids)
 
@@ -362,7 +372,12 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
         y_room = terrain_width * 0.5 - float(getattr(cfg, "path_y_margin", 0.45))
         y_room -= float(getattr(cfg, "foot_lateral_offset", 0.11)) + 0.5 * float(getattr(cfg, "foot_box_width", 0.10))
         y_room = max(0.0, min(float(getattr(cfg, "path_end_y_range", 0.35)), y_room))
-        end_y = y_center + (2.0 * torch.rand((), device=self.device) - 1.0) * y_room
+        if getattr(cfg, "path_straight_line", True):
+            y_min = y_center - y_room
+            y_max = y_center + y_room
+            end_y = torch.clamp(start[1], min=y_min, max=y_max)
+        else:
+            end_y = y_center + (2.0 * torch.rand((), device=self.device) - 1.0) * y_room
         end = torch.stack([torch.tensor(end_x, device=self.device), end_y])
         delta = end - start
         path_len = torch.norm(delta).clamp(min=1e-6)
@@ -598,7 +613,7 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
                 self._save_footstep_topdown_debug(env_id)
 
     def _update_path_commands(self, env_ids=None):
-        if not self._fg_enabled() or not hasattr(self, "footstep_path_active"):
+        if not self._path_guidance_enabled() or not hasattr(self, "footstep_path_active"):
             return
         if env_ids is None:
             ids = torch.nonzero(self.footstep_path_active, as_tuple=False).flatten()
@@ -672,7 +687,7 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
         gymutil.draw_lines(geom, self.gym, self.viewer, self.envs[env_id], pose)
 
     def _draw_footstep_targets(self):
-        if self.viewer is None or not self._fg_enabled() or not hasattr(self, "footstep_path_active"):
+        if self.viewer is None or not self._path_guidance_enabled() or not hasattr(self, "footstep_path_active"):
             return
         env_id = int(self.lookat_id) if hasattr(self, "lookat_id") else 0
         if env_id < 0 or env_id >= self.num_envs:
@@ -709,7 +724,7 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
             self.footstep_skip_vis_counter[env_id] -= 1
 
     def _maybe_save_footstep_topdown_debug(self):
-        if not self._fg_enabled() or not getattr(self._fg_cfg(), "save_topdown_debug", False):
+        if not self._path_guidance_enabled() or not getattr(self._fg_cfg(), "save_topdown_debug", False):
             return
         interval = int(getattr(self._fg_cfg(), "topdown_debug_interval", 100))
         if interval <= 0 or self.common_step_counter % interval != 0:
@@ -1112,7 +1127,8 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
         for i in range(len(self.feet_indices)):
             footpos_in_body_frame[:, i, :] = quat_rotate_inverse(self.base_quat, cur_footpos_translated[:, i, :])
             footvel_in_body_frame[:, i, :] = quat_rotate_inverse(self.base_quat, cur_footvel_translated[:, i, :])
-        height_error = torch.square(footpos_in_body_frame[:, :, 2] - self.cfg.rewards.clearance_height_target).view(self.num_envs, -1)
+        min_clearance_error = F.relu(self.cfg.rewards.clearance_height_target - footpos_in_body_frame[:, :, 2])
+        height_error = torch.square(min_clearance_error).view(self.num_envs, -1)
         foot_leteral_vel = torch.sqrt(torch.sum(torch.square(footvel_in_body_frame[:, :, :2]), dim=2)).view(self.num_envs, -1)
         return torch.sum(height_error * foot_leteral_vel, dim=1)
     
@@ -1229,12 +1245,53 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
     #     rew = (self.terrain_levels > 3) * torch.sum(self.feet_at_edge, dim=-1)
     #     return rew
     
-    def _reward_foot_safety(self):
+    def _foot_safety_touchdown_score(self):
         contact_moment = self.foot_touchdown if hasattr(self, "foot_touchdown") else (self.contact_filt & ~self.was_contact)
-        safety = self._current_foot_sole_safety()
-        threshold = float(getattr(self.cfg.rewards, "foot_safety_threshold", 0.55))
-        unsafe_penalty = F.relu(threshold - safety) / max(threshold, 1e-6)
-        return -(unsafe_penalty * contact_moment.float()).sum(dim=-1)
+        feet_pos = self.rigid_body_states.view(self.num_envs, self.num_bodies, 13)[:, self.feet_indices, :2]
+        safety = self._get_foot_safety(feet_pos.reshape(-1, 2)).reshape(self.num_envs, len(self.feet_indices))
+        return safety, contact_moment.float()
+
+    def _reward_foot_safety(self):
+        safety, contact_moment = self._foot_safety_touchdown_score()
+        threshold = float(getattr(self.cfg.rewards, "foot_safety_threshold", 0.5))
+        return (2.0 * F.relu(safety - threshold) * contact_moment).sum(dim=-1)
+
+    def _reward_foot_safety_penalty(self):
+        safety, contact_moment = self._foot_safety_touchdown_score()
+        threshold = float(getattr(self.cfg.rewards, "foot_safety_threshold", 0.5))
+        return (2.0 * F.relu(threshold - safety) * contact_moment).sum(dim=-1)
+
+    def _reward_downstairs_com_back(self):
+        rew = torch.zeros(self.num_envs, device=self.device)
+        if not hasattr(self, "footstep_path_active"):
+            return rew
+        active = self.footstep_path_active & self._footstep_stair_mask()
+        if not active.any():
+            return rew
+
+        feet_xy = self.feet_pos[:, :, :2]
+        contact = self.contact_filt.float()
+        contact_count = contact.sum(dim=1, keepdim=True)
+        contact_center = (feet_xy * contact.unsqueeze(-1)).sum(dim=1) / contact_count.clamp_min(1.0)
+        feet_center = feet_xy.mean(dim=1)
+        support_center = torch.where(contact_count > 0.5, contact_center, feet_center)
+
+        path_dir = self.footstep_path_dir_xy
+        lookahead = torch.tensor(getattr(self.cfg.rewards, "downstairs_com_lookahead", [0.25, 0.40, 0.55]), dtype=torch.float, device=self.device)
+        lookahead_points = support_center[:, None, :] + lookahead[None, :, None] * path_dir[:, None, :]
+        h_now = self._query_height_at_points(support_center)
+        h_future = self._query_height_at_points(lookahead_points.reshape(-1, 2)).reshape(self.num_envs, -1).min(dim=1).values
+        drop = h_now - h_future
+
+        drop_threshold = float(getattr(self.cfg.rewards, "downstairs_com_drop_threshold", 0.03))
+        gate_temperature = max(float(getattr(self.cfg.rewards, "downstairs_com_gate_temperature", 0.02)), 1e-6)
+        downstairs_gate = torch.sigmoid((drop - drop_threshold) / gate_temperature) * active.float()
+
+        base_ahead = torch.sum((self.root_states[:, :2] - support_center) * path_dir, dim=1)
+        max_ahead = float(getattr(self.cfg.rewards, "downstairs_com_max_ahead", -0.05))
+        ahead_margin = max(float(getattr(self.cfg.rewards, "downstairs_com_ahead_margin", 0.10)), 1e-6)
+        excess_ahead = F.relu(base_ahead - max_ahead) / ahead_margin
+        return downstairs_gate * torch.square(excess_ahead)
 
     def _reward_footstep_target(self):
         rew = torch.zeros(self.num_envs, device=self.device)

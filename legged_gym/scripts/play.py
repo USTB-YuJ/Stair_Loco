@@ -79,7 +79,9 @@ def play(args):
     env_cfg.env.test = True
 
     if hasattr(env_cfg, 'footstep_guidance'):
+        env_cfg.footstep_guidance.enable_stair_path_guidance = True
         env_cfg.footstep_guidance.enable_footstep_guidance = False
+        env_cfg.footstep_guidance.visualize_stair_path = True
         env_cfg.footstep_guidance.visualize_footstep_targets = False
         env_cfg.footstep_guidance.save_topdown_debug = False
 
@@ -118,7 +120,11 @@ def play(args):
     env_cfg.commands.ranges.ang_vel_yaw = [0, 0]
     env_cfg.commands.heading_command = False
     env_cfg.commands.resampling_time = 100
-    if hasattr(env_cfg, 'footstep_guidance') and env_cfg.footstep_guidance.enable_footstep_guidance:
+    path_guidance_enabled = (hasattr(env_cfg, "footstep_guidance") and (
+        getattr(env_cfg.footstep_guidance, "enable_stair_path_guidance", False) or
+        getattr(env_cfg.footstep_guidance, "enable_footstep_guidance", False)
+    ))
+    if path_guidance_enabled:
         env_cfg.commands.ranges.lin_vel_x = [0.0, 0.8]
         env_cfg.commands.ranges.lin_vel_y = [-0.5, 0.5]
         env_cfg.commands.ranges.heading = [-3.14, 3.14]
@@ -331,7 +337,7 @@ if __name__ == '__main__':
     args = get_args()
     # args.task = "h1_loco"
     args.task = "g1_16dof_loco"
-    args.load_run = "/root/gpufree-data/workspace/more/logs/g1_16dof_loco/May17_00-22-50_"
+    args.load_run = "/root/gpufree-data/workspace/more/logs/g1_16dof_loco/May18_12-41-50_"
     args.record = True
     args.headless = not args.record  # need viewer for recording
     args.save_depth = False
