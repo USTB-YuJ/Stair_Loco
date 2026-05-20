@@ -56,6 +56,7 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
         self.feet_indicator_offset = torch.tensor(self.cfg.asset.feet_indicator_offset, dtype=torch.float, device=self.device, requires_grad=False)
         self.feet_indicator_pos = torch.zeros(self.num_envs, len(self.feet_indices), *self.feet_indicator_offset.shape,dtype=torch.float, device=self.device, requires_grad=False)
         self._init_footstep_guidance_buffers()
+        self._init_bev_safety_buffers()
 
     def render(self, sync_frame_time=True):
         if self.viewer and getattr(self.cfg.terrain, "visualize_safety_map", False):
@@ -66,7 +67,7 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
                  getattr(self._fg_cfg(), "visualize_footstep_targets", False))):
             self._draw_footstep_targets()
         if (self.viewer and self.enable_viewer_sync and self.debug_viz and
-                self._fg_enabled() and getattr(self._fg_cfg(), "visualize_affordance_candidates", False)):
+                self._path_guidance_enabled() and getattr(self._fg_cfg(), "visualize_affordance_candidates", False)):
             self._draw_affordance_candidates()
         return super(LeggedRobot, self).render(sync_frame_time=sync_frame_time)
 
@@ -121,7 +122,78 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
         self.foot_affordance_labels = torch.zeros(
             self.num_envs, 2, self.foot_affordance_candidate_xy.shape[1], 4,
             dtype=torch.float, device=self.device)
+        self.foot_affordance_pred_vis = None
         self._foot_affordance_last_update = -1000000
+
+
+    def _init_bev_safety_buffers(self):
+        depth_cfg = getattr(self.cfg, "depth", None)
+        if depth_cfg is None or not hasattr(depth_cfg, "bev_safety_x_range"):
+            self.bev_safety_labels = None
+            return
+        x_range = getattr(depth_cfg, "bev_safety_x_range", [0.0, 1.2])
+        y_range = getattr(depth_cfg, "bev_safety_y_range", [-0.45, 0.45])
+        res = float(getattr(depth_cfg, "bev_safety_resolution", 0.03))
+        x0, x1 = float(x_range[0]), float(x_range[1])
+        y0, y1 = float(y_range[0]), float(y_range[1])
+        self.bev_safety_resolution = res
+        self.bev_safety_map_h = max(1, int(round((x1 - x0) / res)))
+        self.bev_safety_map_w = max(1, int(round((y1 - y0) / res)))
+        xs = x0 + (torch.arange(self.bev_safety_map_h, dtype=torch.float, device=self.device) + 0.5) * res
+        ys = y0 + (torch.arange(self.bev_safety_map_w, dtype=torch.float, device=self.device) + 0.5) * res
+        grid_x, grid_y = torch.meshgrid(xs, ys, indexing="ij")
+        sub = torch.linspace(-0.5 * res, 0.5 * res, 3, dtype=torch.float, device=self.device)
+        sub_x, sub_y = torch.meshgrid(sub, sub, indexing="ij")
+        local_x = grid_x[:, :, None] + sub_x.reshape(1, 1, -1)
+        local_y = grid_y[:, :, None] + sub_y.reshape(1, 1, -1)
+        self.bev_safety_local_points = torch.stack((local_x, local_y), dim=-1)
+        self.bev_safety_labels = torch.zeros(
+            self.num_envs, 2, self.bev_safety_map_h, self.bev_safety_map_w,
+            dtype=torch.float, device=self.device)
+        self.bev_safety_labels[:, 1] = 1.0
+        self._bev_safety_last_update = -1000000
+        print(f"[BEV_SAFETY] label_shape={tuple(self.bev_safety_labels.shape[1:])} res={res:.3f} x={x_range} y={y_range}")
+
+    def _maybe_update_bev_safety_labels(self, force=False):
+        if not hasattr(self, "bev_safety_labels") or self.bev_safety_labels is None:
+            return
+        depth_cfg = getattr(self.cfg, "depth", None)
+        default_interval = int(getattr(depth_cfg, "update_interval", 1)) if depth_cfg is not None else 1
+        interval = int(getattr(depth_cfg, "bev_safety_label_update_interval", default_interval)) if depth_cfg is not None else default_interval
+        interval = max(1, interval)
+        if force or self.common_step_counter - self._bev_safety_last_update >= interval:
+            self._update_bev_safety_labels()
+            self._bev_safety_last_update = int(self.common_step_counter)
+
+    def _update_bev_safety_labels(self, env_ids=None):
+        if not hasattr(self, "bev_safety_labels") or self.bev_safety_labels is None:
+            return
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, dtype=torch.long, device=self.device)
+        if env_ids.numel() == 0:
+            return
+        depth_cfg = getattr(self.cfg, "depth", None)
+        batch_size = int(getattr(depth_cfg, "bev_safety_label_batch_size", 256)) if depth_cfg is not None else 256
+        batch_size = max(1, batch_size)
+        local = self.bev_safety_local_points
+        H, W, S = local.shape[:3]
+        for start in range(0, env_ids.numel(), batch_size):
+            ids = env_ids[start:start + batch_size]
+            base_xy = self.root_states[ids, :2]
+            yaw = self.rpy[ids, 2]
+            forward = torch.stack((torch.cos(yaw), torch.sin(yaw)), dim=1)
+            normal = torch.stack((-torch.sin(yaw), torch.cos(yaw)), dim=1)
+            world = (base_xy[:, None, None, None, :] +
+                     local[None, :, :, :, 0:1] * forward[:, None, None, None, :] +
+                     local[None, :, :, :, 1:2] * normal[:, None, None, None, :])
+            safety = self._query_safety_at_points(world.reshape(-1, 2)).reshape(ids.numel(), H, W, S)
+            self.bev_safety_labels[ids, 0] = safety.min(dim=-1).values.clamp(0.0, 1.0)
+            self.bev_safety_labels[ids, 1] = 1.0
+        if not hasattr(self, "_bev_safety_diag_printed"):
+            self._bev_safety_diag_printed = True
+            vals = self.bev_safety_labels[env_ids, 0]
+            unsafe_frac = (vals < 0.5).float().mean().item()
+            print(f"[BEV_SAFETY] gt min={vals.min().item():.4f} max={vals.max().item():.4f} mean={vals.mean().item():.4f} std={vals.std().item():.4f} unsafe={unsafe_frac:.3f}")
 
     def _build_foot_affordance_candidate_xy(self):
         cfg = self._fg_cfg()
@@ -167,27 +239,15 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
         offsets = (l_offsets.view(1, samples_l, 1, 1) * dir_xy.view(n, 1, 1, 2) +
                    w_offsets.view(1, 1, samples_w, 1) * normal_xy.view(n, 1, 1, 2)).reshape(n, -1, 2)
         points = (centers_xy[:, None, :] + offsets).reshape(-1, 2)
-        hs = self.terrain.cfg.horizontal_scale
-        border = self.terrain.cfg.border_size
-        map_x, map_y = self.terrain_safety_map.shape
-        px_f = (points[:, 0] + border) / hs
-        py_f = (points[:, 1] + border) / hs
-        inside = (px_f >= 0) & (px_f <= map_x - 1) & (py_f >= 0) & (py_f <= map_y - 1)
-        px = px_f.long().clamp(0, map_x - 1)
-        py = py_f.long().clamp(0, map_y - 1)
-        safety = self.terrain_safety_map[px, py].reshape(n, -1)
-        inside = inside.reshape(n, -1)
-        inside_f = inside.float()
-        denom = inside_f.sum(dim=1).clamp_min(1.0)
-        valid_ratio = inside_f.mean(dim=1)
-        safety_mean = (safety * inside_f).sum(dim=1) / denom
-        safety_label = torch.clamp(safety_mean * valid_ratio, 0.0, 1.0)
+        safety = self._query_safety_at_points(points).reshape(n, -1)
+        safety_label = torch.clamp(safety.mean(dim=1), 0.0, 1.0)
         # Edge risk is intentionally not supervised in the current mainline;
         # terrain_safety_map already encodes unsafe edge/roughness information.
         edge_label = torch.zeros_like(safety_label)
         return safety_label, edge_label
 
-    def _sample_safety_boxes(self, centers_xy, dir_xy, normal_xy, length, width, samples_l, samples_w):
+    def _sample_safety_boxes(self, centers_xy, dir_xy, normal_xy, length, width, samples_l, samples_w,
+                             reduce="mean", low_percentile_fraction=0.2):
         n = centers_xy.shape[0]
         if n == 0:
             return torch.empty(0, dtype=self.terrain_safety_map.dtype, device=self.device)
@@ -199,27 +259,25 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
                    w_offsets.view(1, 1, samples_w, 1) * normal_xy.view(n, 1, 1, 2)).reshape(n, -1, 2)
         points = (centers_xy[:, None, :] + offsets).reshape(-1, 2)
 
-        hs = self.terrain.cfg.horizontal_scale
-        border = self.terrain.cfg.border_size
-        map_x, map_y = self.terrain_safety_map.shape
-        px_f = (points[:, 0] + border) / hs
-        py_f = (points[:, 1] + border) / hs
-        inside = (px_f >= 0) & (px_f <= map_x - 1) & (py_f >= 0) & (py_f <= map_y - 1)
-        px = px_f.long().clamp(0, map_x - 1)
-        py = py_f.long().clamp(0, map_y - 1)
-        safety = self.terrain_safety_map[px, py].reshape(n, -1)
-        inside_f = inside.reshape(n, -1).float()
-        denom = inside_f.sum(dim=1).clamp_min(1.0)
-        valid_ratio = inside_f.mean(dim=1)
-        safety_mean = (safety * inside_f).sum(dim=1) / denom
-        return torch.clamp(safety_mean * valid_ratio, 0.0, 1.0)
+        safety = self._query_safety_at_points(points).reshape(n, -1)
+        if reduce == "low_percentile_mean":
+            fraction = float(np.clip(low_percentile_fraction, 0.0, 1.0))
+            k = max(1, int(np.ceil(safety.shape[1] * fraction)))
+            safety = torch.topk(safety, k, dim=1, largest=False).values.mean(dim=1)
+        elif reduce == "min":
+            safety = safety.min(dim=1).values
+        else:
+            safety = safety.mean(dim=1)
+        return torch.clamp(safety, 0.0, 1.0)
 
-    def _current_foot_sole_safety(self):
+    def _current_foot_sole_safety(self, reduce="mean", low_percentile_fraction=None):
         rewards_cfg = self.cfg.rewards
         length = float(getattr(rewards_cfg, "foot_safety_box_length", 0.22))
         width = float(getattr(rewards_cfg, "foot_safety_box_width", 0.10))
         samples_l = int(getattr(rewards_cfg, "foot_safety_box_samples_length", 5))
         samples_w = int(getattr(rewards_cfg, "foot_safety_box_samples_width", 3))
+        if low_percentile_fraction is None:
+            low_percentile_fraction = float(getattr(rewards_cfg, "foot_safety_penalty_low_percentile", 0.2))
 
         foot_states = self.rigid_body_states.view(self.num_envs, self.num_bodies, 13)[:, self.feet_indices]
         centers_xy = foot_states[..., :2].reshape(-1, 2)
@@ -232,7 +290,9 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
         fallback_dir = torch.stack((torch.cos(yaw), torch.sin(yaw)), dim=1)
         dir_xy = torch.where(dir_norm > 1e-4, dir_xy / dir_norm.clamp_min(1e-6), fallback_dir)
         normal_xy = torch.stack((-dir_xy[:, 1], dir_xy[:, 0]), dim=1)
-        safety = self._sample_safety_boxes(centers_xy, dir_xy, normal_xy, length, width, samples_l, samples_w)
+        safety = self._sample_safety_boxes(
+            centers_xy, dir_xy, normal_xy, length, width, samples_l, samples_w,
+            reduce=reduce, low_percentile_fraction=low_percentile_fraction)
         return safety.reshape(self.num_envs, len(self.feet_indices))
 
     def _maybe_update_foot_affordance_labels(self, force=False):
@@ -279,6 +339,12 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
         self.foot_affordance_labels[env_ids, :, :, 2] = targetness
         self.foot_affordance_labels[env_ids, :, :, 3] = needed[:, :, None]
 
+    def set_foot_affordance_predictions(self, predictions):
+        if predictions is None:
+            self.foot_affordance_pred_vis = None
+            return
+        self.foot_affordance_pred_vis = predictions.detach().to(self.device)
+
     def _draw_affordance_candidates(self):
         if self.viewer is None or not hasattr(self, "foot_affordance_labels"):
             return
@@ -289,13 +355,25 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
         env_ids = torch.tensor([env_id], dtype=torch.long, device=self.device)
         centers, forward, normal = self._foot_affordance_candidate_centers_world(env_ids)
         labels = self.foot_affordance_labels[env_id]
+        preds = getattr(self, "foot_affordance_pred_vis", None)
+        pred_labels = None
+        if preds is not None and preds.ndim == 4 and preds.shape[0] > env_id:
+            pred_labels = preds[env_id]
+        cfg = self._fg_cfg()
+        show_labels = getattr(cfg, "visualize_affordance_labels", True)
+        show_predictions = getattr(cfg, "visualize_affordance_predictions", True)
         for side in range(labels.shape[0]):
             for k in range(labels.shape[1]):
-                safety = float(labels[side, k, 0].item())
-                targetness = float(labels[side, k, 2].item()) if labels[side, k, 3] > 0 else 0.0
-                score = max(safety, targetness)
-                color = (1.0 - score, score, 0.15 + 0.35 * targetness)
-                self._add_debug_lines(env_id, self._footstep_rect_lines(centers[0, side, k], forward[0], normal[0]), color)
+                if show_labels:
+                    safety = float(labels[side, k, 0].item())
+                    targetness = float(labels[side, k, 2].item()) if labels[side, k, 3] > 0 else 0.0
+                    score = max(safety, targetness)
+                    color = (1.0 - score, score, 0.15 + 0.35 * targetness)
+                    self._add_debug_lines(env_id, self._footstep_rect_lines(centers[0, side, k], forward[0], normal[0], z_offset=0.035), color)
+                if show_predictions and pred_labels is not None:
+                    pred_safety = float(pred_labels[side, k, 0].clamp(0.0, 1.0).item())
+                    pred_color = (1.0 - pred_safety, pred_safety, 1.0)
+                    self._add_debug_lines(env_id, self._footstep_rect_lines(centers[0, side, k], forward[0], normal[0], z_offset=0.085), pred_color)
 
     def _footstep_stair_mask(self, env_ids=None):
         mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -349,6 +427,10 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
         if hasattr(self, "foot_affordance_labels"):
             self.foot_affordance_labels[env_ids] = 0.
             self._foot_affordance_last_update = -1000000
+        if hasattr(self, "bev_safety_labels") and self.bev_safety_labels is not None:
+            self.bev_safety_labels[env_ids] = 0.
+            self.bev_safety_labels[env_ids, 1] = 1.0
+            self._bev_safety_last_update = -1000000
         if not self._path_guidance_enabled() or not hasattr(self, "terrain"):
             return
         stair_env_ids = env_ids[self._footstep_stair_mask(env_ids)]
@@ -394,13 +476,11 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
     def _sample_safety_and_height(self, points_xy):
         hs = self.terrain.cfg.horizontal_scale
         border = self.terrain.cfg.border_size
-        map_x, map_y = self.terrain_safety_map.shape
+        map_x, map_y = self.height_samples.shape
         px_f = (points_xy[:, 0] + border) / hs
         py_f = (points_xy[:, 1] + border) / hs
         inside = (px_f >= 0) & (px_f <= map_x - 1) & (py_f >= 0) & (py_f <= map_y - 1)
-        px = px_f.long().clamp(0, map_x - 1)
-        py = py_f.long().clamp(0, map_y - 1)
-        safety = self.terrain_safety_map[px, py]
+        safety = self._query_safety_at_points(points_xy)
         height = self._query_height_at_points(points_xy)
         return safety, height, inside
 
@@ -449,13 +529,13 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
         points = (centers_xy[:, None, :] + offsets).reshape(-1, 2)
         hs = self.terrain.cfg.horizontal_scale
         border = self.terrain.cfg.border_size
-        map_x, map_y = self.terrain_safety_map.shape
+        map_x, map_y = self.height_samples.shape
         px_f = (points[:, 0] + border) / hs
         py_f = (points[:, 1] + border) / hs
         inside = (px_f >= 0) & (px_f <= map_x - 1) & (py_f >= 0) & (py_f <= map_y - 1)
         px = px_f.long().clamp(0, map_x - 1)
         py = py_f.long().clamp(0, map_y - 1)
-        safety = self.terrain_safety_map[px, py].reshape(n, -1)
+        safety = self._query_safety_at_points(points).reshape(n, -1)
         height = (self.height_samples[px, py].float() * self.terrain.cfg.vertical_scale).reshape(n, -1)
         inside = inside.reshape(n, -1)
         safety_sorted = torch.sort(safety, dim=1).values
@@ -667,7 +747,7 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
         colors = np.tile(np.array(color, dtype=np.float32), (vertices.shape[0] // 2, 1))
         self.gym.add_lines(self.viewer, self.envs[env_id], vertices.shape[0] // 2, vertices, colors)
 
-    def _footstep_rect_lines(self, center_xy, path_dir, path_normal):
+    def _footstep_rect_lines(self, center_xy, path_dir, path_normal, z_offset=0.035):
         cfg = self._fg_cfg()
         half_l = 0.5 * float(getattr(cfg, "foot_box_length", 0.22))
         half_w = 0.5 * float(getattr(cfg, "foot_box_width", 0.10))
@@ -677,7 +757,7 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
             center_xy - half_l * path_dir - half_w * path_normal,
             center_xy - half_l * path_dir + half_w * path_normal,
         ], dim=0)
-        corners = self._line_height_points(corners_xy)
+        corners = self._line_height_points(corners_xy, z_offset=z_offset)
         return [corners[0], corners[1], corners[1], corners[2], corners[2], corners[3], corners[3], corners[0]]
 
     def _draw_target_sphere(self, env_id, xy, color, radius=0.035):
@@ -746,17 +826,27 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
         end_x = start_x + len_px
         start_y = border_px + col * wid_px
         end_y = start_y + wid_px
-        patch = self.terrain_safety_map[start_x:end_x, start_y:end_y].detach().cpu().numpy()
+        safety_map, map_scale = self._safety_map_for_query(use_label_map=True)
+        hs = self.terrain.cfg.horizontal_scale
+        label_start_x = int(round(start_x * hs / map_scale))
+        label_end_x = int(round(end_x * hs / map_scale))
+        label_start_y = int(round(start_y * hs / map_scale))
+        label_end_y = int(round(end_y * hs / map_scale))
+        label_start_x = max(0, min(label_start_x, safety_map.shape[0] - 1))
+        label_end_x = max(label_start_x + 1, min(label_end_x, safety_map.shape[0]))
+        label_start_y = max(0, min(label_start_y, safety_map.shape[1] - 1))
+        label_end_y = max(label_start_y + 1, min(label_end_y, safety_map.shape[1]))
+        patch = self._safety_values_to_float(
+            safety_map[label_start_x:label_end_x, label_start_y:label_end_y]).detach().cpu().numpy()
         img = np.clip(patch, 0.0, 1.0)
         img = (img * 255).astype(np.uint8)
         img = cv2.applyColorMap(img, cv2.COLORMAP_VIRIDIS)
         scale = int(getattr(cfg, "topdown_scale", 2))
         img = cv2.resize(img, (img.shape[1] * scale, img.shape[0] * scale), interpolation=cv2.INTER_NEAREST)
-        hs = self.terrain.cfg.horizontal_scale
         border_m = self.terrain.cfg.border_size
         def xy_to_pix(xy):
-            px = int(round(((float(xy[0]) + border_m) / hs - start_x) * scale))
-            py = int(round(((float(xy[1]) + border_m) / hs - start_y) * scale))
+            px = int(round(((float(xy[0]) + border_m) / map_scale - label_start_x) * scale))
+            py = int(round(((float(xy[1]) + border_m) / map_scale - label_start_y) * scale))
             return py, px
         p0 = xy_to_pix(self.footstep_path_start_xy[env_id])
         p1 = xy_to_pix(self.footstep_path_end_xy[env_id])
@@ -1245,21 +1335,22 @@ class G1_16Dof_Loco_Robot(LeggedRobot):
     #     rew = (self.terrain_levels > 3) * torch.sum(self.feet_at_edge, dim=-1)
     #     return rew
     
-    def _foot_safety_touchdown_score(self):
-        contact_moment = self.foot_touchdown if hasattr(self, "foot_touchdown") else (self.contact_filt & ~self.was_contact)
-        feet_pos = self.rigid_body_states.view(self.num_envs, self.num_bodies, 13)[:, self.feet_indices, :2]
-        safety = self._get_foot_safety(feet_pos.reshape(-1, 2)).reshape(self.num_envs, len(self.feet_indices))
-        return safety, contact_moment.float()
+    def _foot_safety_box_score(self, reduce="mean", low_percentile_fraction=None):
+        return self._current_foot_sole_safety(reduce=reduce, low_percentile_fraction=low_percentile_fraction)
 
     def _reward_foot_safety(self):
-        safety, contact_moment = self._foot_safety_touchdown_score()
+        safety = self._foot_safety_box_score()
+        contact_moment = self.foot_touchdown if hasattr(self, "foot_touchdown") else (self.contact_filt & ~self.was_contact)
         threshold = float(getattr(self.cfg.rewards, "foot_safety_threshold", 0.5))
-        return (2.0 * F.relu(safety - threshold) * contact_moment).sum(dim=-1)
+        return (2.0 * F.relu(safety - threshold) * contact_moment.float()).sum(dim=-1)
 
     def _reward_foot_safety_penalty(self):
-        safety, contact_moment = self._foot_safety_touchdown_score()
+        low_percentile = float(getattr(self.cfg.rewards, "foot_safety_penalty_low_percentile", 0.2))
+        safety = self._foot_safety_box_score(
+            reduce="low_percentile_mean", low_percentile_fraction=low_percentile)
+        contact = self.contact_filt.float()
         threshold = float(getattr(self.cfg.rewards, "foot_safety_threshold", 0.5))
-        return (2.0 * F.relu(threshold - safety) * contact_moment).sum(dim=-1)
+        return (2.0 * F.relu(threshold - safety) * contact).sum(dim=-1)
 
     def _reward_downstairs_com_back(self):
         rew = torch.zeros(self.num_envs, device=self.device)

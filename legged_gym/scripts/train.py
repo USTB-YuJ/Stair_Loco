@@ -42,8 +42,10 @@ if __name__ == '__main__':
     args = get_args()
     # args.task = "h1_loco"
     args.task = "g1_16dof_loco"
-    args.num_envs = 2048
+    args.num_envs = 1024
     args.headless = True
     args.max_iterations = 80000
     args.no_wandb = True
+    args.resume = True
+    args.load_run = "/root/gpufree-data/workspace/more/logs/g1_16dof_loco/May19_23-55-37_"
     train(args)

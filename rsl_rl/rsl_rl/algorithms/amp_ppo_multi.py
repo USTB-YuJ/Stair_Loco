@@ -69,6 +69,9 @@ class AMPPPOMulti:
                  affordance_safety_loss_weight=0.5,
                  affordance_edge_loss_weight=0.25,
                  affordance_target_loss_weight=0.25,
+                 bev_safety_loss_coef=0.0,
+                 bev_safety_unsafe_weight=4.0,
+                 bev_safety_transition_weight=2.0,
                  **kwargs
                  ):
         self.use_amp = use_amp
@@ -80,6 +83,9 @@ class AMPPPOMulti:
         self.affordance_safety_loss_weight = affordance_safety_loss_weight
         self.affordance_edge_loss_weight = affordance_edge_loss_weight
         self.affordance_target_loss_weight = affordance_target_loss_weight
+        self.bev_safety_loss_coef = bev_safety_loss_coef
+        self.bev_safety_unsafe_weight = bev_safety_unsafe_weight
+        self.bev_safety_transition_weight = bev_safety_transition_weight
         self.device = device
         if default_pos is not None: 
             self.default_pos = torch.tensor(default_pos, device=self.device)
@@ -124,10 +130,11 @@ class AMPPPOMulti:
         self.max_grad_norm = max_grad_norm
         self.use_clipped_value_loss = use_clipped_value_loss
 
-    def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, history_len, history_dim, depth_shape=None, depth_buffer_len=None, foot_affordance_shape=None):
+    def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, history_len, history_dim, depth_shape=None, depth_buffer_len=None, foot_affordance_shape=None, bev_safety_shape=None):
         self.storage = RolloutStorage(
             num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, self.device, history_len, history_dim,
-            depth_shape, depth_buffer_len, store_gt_safety_heatmap=self.seg_loss_coef > 0, foot_affordance_shape=foot_affordance_shape)
+            depth_shape, depth_buffer_len, store_gt_safety_heatmap=self.seg_loss_coef > 0,
+            foot_affordance_shape=foot_affordance_shape, bev_safety_shape=bev_safety_shape)
 
     def test_mode(self):
         self.actor_critic.test()
@@ -209,6 +216,7 @@ class AMPPPOMulti:
         mean_agent_acc = 0
         mean_demo_acc = 0
         mean_affordance_loss = 0
+        mean_bev_safety_loss = 0
         
         if self.actor_critic.is_recurrent:
             generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
@@ -276,13 +284,16 @@ class AMPPPOMulti:
                 mean_demo_acc += demo_acc.mean().item()
         
         for obs_batch, critic_obs_batch, actions_batch, next_obs_batch, next_critic_observations_batch, history_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, \
-            old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch, depth_image_batch, gt_safety_heatmap_batch, foot_affordance_labels_batch, *_ in generator:
+            old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch, depth_image_batch, gt_safety_heatmap_batch, foot_affordance_labels_batch, bev_safety_labels_batch, *_ in generator:
 
             aug_obs_batch, history_batch = obs_batch.detach(), history_batch.detach()
             need_seg_masks = self.use_depth and gt_safety_heatmap_batch is not None and self.seg_loss_coef > 0
             need_affordance_loss = (self.use_depth and foot_affordance_labels_batch is not None and
                                     self.affordance_loss_coef > 0 and
                                     getattr(self.actor_critic, "enable_foot_affordance", False))
+            need_bev_safety_loss = (self.use_depth and bev_safety_labels_batch is not None and
+                                    self.bev_safety_loss_coef > 0 and
+                                    getattr(self.actor_critic, "enable_bev_safety", False))
             if self.use_depth:
                 aug_depth_image_batch = depth_image_batch.detach()
                 self.actor_critic.act(aug_obs_batch, history_batch, aug_depth_image_batch, return_masks=need_seg_masks)
@@ -365,6 +376,37 @@ class AMPPPOMulti:
                     print(f"[SEG_DIAG] pred_mean={pred_masks.mean().item():.4f} gt_mean={gt_safety_heatmap_batch.mean().item():.4f} seg_loss={seg_loss.item():.6f}")
                 loss = loss + self.seg_loss_coef * seg_loss
 
+            if need_bev_safety_loss:
+                pred_bev = self.actor_critic._last_bev_safety_pred
+                labels = bev_safety_labels_batch.to(pred_bev.device)
+                target = labels[:, 0]
+                valid = labels[:, 1]
+                unsafe = (target < 0.5) & (valid > 0.5)
+                transition = (target > 0.05) & (target < 0.95)
+                weight = (1.0 +
+                          self.bev_safety_unsafe_weight * unsafe.float() +
+                          self.bev_safety_transition_weight * transition.float())
+                weighted_valid = weight * valid
+                bev_safety_loss = (torch.square(pred_bev - target) * weighted_valid).sum() / weighted_valid.sum().clamp_min(1.0)
+                if unsafe.any():
+                    unsafe_recall = ((pred_bev < 0.5) & unsafe).float().sum() / unsafe.float().sum().clamp_min(1.0)
+                else:
+                    unsafe_recall = torch.ones((), device=pred_bev.device)
+                if not hasattr(self, '_bev_safety_loss_printed'):
+                    self._bev_safety_loss_printed = True
+                    print(f"[BEV_DEBUG] bev_safety_loss enabled: coef={self.bev_safety_loss_coef}, shape={pred_bev.shape}")
+                self.last_bev_safety_loss = bev_safety_loss.item()
+                self.last_bev_pred_mean = pred_bev.mean().item()
+                self.last_bev_gt_mean = target.mean().item()
+                self.last_bev_pred_std = pred_bev.std().item()
+                self.last_bev_gt_std = target.std().item()
+                self.last_bev_unsafe_recall = unsafe_recall.item()
+                self._last_pred_bev_safety = pred_bev[:1].detach().cpu()
+                self._last_gt_bev_safety = labels[:1].detach().cpu()
+                loss = loss + self.bev_safety_loss_coef * bev_safety_loss
+            else:
+                bev_safety_loss = None
+
             if need_affordance_loss:
                 import torch.nn.functional as _F
                 pred_affordance = self.actor_critic._last_affordance_pred
@@ -427,6 +469,8 @@ class AMPPPOMulti:
             mean_surrogate_loss += surrogate_loss.item()
             if affordance_loss is not None:
                 mean_affordance_loss += affordance_loss.item()
+            if bev_safety_loss is not None:
+                mean_bev_safety_loss += bev_safety_loss.item()
                 
         num_updates = self.num_learning_epochs * self.num_mini_batches
         mean_value_loss /= num_updates
@@ -438,7 +482,9 @@ class AMPPPOMulti:
         mean_agent_acc /= num_updates
         mean_demo_acc /= num_updates
         mean_affordance_loss /= num_updates
+        mean_bev_safety_loss /= num_updates
         self.last_mean_affordance_loss = mean_affordance_loss
+        self.last_mean_bev_safety_loss = mean_bev_safety_loss
         
         self.storage.clear()
 

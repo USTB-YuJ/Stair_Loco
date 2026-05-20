@@ -142,6 +142,52 @@ class FootAffordanceHead(nn.Module):
         return tokens.reshape(B, sides * self.token_dim), pred
 
 
+class BEVSafetyHead(nn.Module):
+    def __init__(self, depth_dim=128, conv_channels=64, token_dim=64, hidden_dim=64,
+                 output_shape=(40, 30)):
+        super().__init__()
+        self.token_dim = int(token_dim)
+        self.output_shape = tuple(int(x) for x in output_shape)
+        self.conv_channels = int(conv_channels)
+        activation = nn.ELU()
+        hidden_dim = int(hidden_dim)
+        mid_dim = max(16, hidden_dim // 2)
+
+        self.depth_condition = nn.Sequential(
+            nn.Linear(depth_dim, conv_channels),
+            activation,
+        )
+        self.decoder = nn.Sequential(
+            nn.ConvTranspose2d(conv_channels, hidden_dim, 4, 2, 1),
+            activation,
+            nn.ConvTranspose2d(hidden_dim, mid_dim, 4, 2, 1),
+            activation,
+            nn.ConvTranspose2d(mid_dim, mid_dim, 4, 2, 1),
+            activation,
+            nn.Upsample(size=self.output_shape, mode='bilinear', align_corners=False),
+            nn.Conv2d(mid_dim, 1, 3, padding=1),
+            nn.Sigmoid(),
+        )
+        self.token_encoder = nn.Sequential(
+            nn.Conv2d(1, 16, 3, stride=2, padding=1),
+            activation,
+            nn.Conv2d(16, 32, 3, stride=2, padding=1),
+            activation,
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(32, self.token_dim),
+            activation,
+        )
+
+    def forward(self, depth_feature: torch.Tensor, conv_feat: Optional[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
+        if conv_feat is None:
+            conv_feat = depth_feature.new_zeros(depth_feature.shape[0], self.conv_channels, 5, 5)
+        cond = self.depth_condition(depth_feature).view(depth_feature.shape[0], self.conv_channels, 1, 1)
+        pred_map = self.decoder(conv_feat + cond).squeeze(1)
+        token = self.token_encoder(pred_map.unsqueeze(1))
+        return token, pred_map
+
+
 class StackDepthEncoder(nn.Module):
     def __init__(self, base_backbone: DepthOnlyFCBackbone58x87, buffer_len=None,
                  temporal_channels=64, output_dim=128) -> None:
@@ -162,17 +208,19 @@ class StackDepthEncoder(nn.Module):
         )
         self.mlp = nn.Sequential(nn.Linear(temporal_channels * 2, output_dim), activation)
 
-    def forward(self, depth_image):
-        # depth_image shape: [batch_size, num, 58, 87]
-        depth_latent = self.base_backbone(depth_image.flatten(0, 1))  # [batch_size * num, 128]
-        depth_latent = depth_latent.reshape(depth_image.shape[0], depth_image.shape[1], -1)  # [batch_size, num, 128]
+    def forward(self, depth_image, return_masks: bool = False):
+        # depth_image shape: [batch_size, num, H, W]
+        B, T = depth_image.shape[:2]
+        flat_latent, flat_conv = self.base_backbone(depth_image.flatten(0, 1))
+        self._last_conv_feat = flat_conv.reshape(B, T, flat_conv.shape[1], flat_conv.shape[2], flat_conv.shape[3])[:, -1]
+        depth_latent = flat_latent.reshape(B, T, -1)  # [batch_size, num, 128]
         depth_latent = depth_latent.transpose(1, 2)  # [batch_size, 128, num]
         depth_latent = self.temporal(depth_latent)
         depth_mean = depth_latent.mean(dim=-1)
         depth_max = torch.max(depth_latent, dim=-1).values
         depth_latent = torch.cat([depth_mean, depth_max], dim=-1)
         depth_latent = self.mlp(depth_latent)
-        return depth_latent
+        return depth_latent, None
 
 class StackDepthEncoderGRU(nn.Module):
     def __init__(self, base_backbone: DepthOnlyFCBackbone58x87,
@@ -200,11 +248,14 @@ class StackDepthEncoderGRU(nn.Module):
         # depth_image shape: [batch_size, num, 64, 64]
         B, T = depth_image.shape[:2]
         latents, conv_feats = [], []
+        latest_conv_feat = None
         for t in range(T):
             lat, cf = self.base_backbone(depth_image[:, t])
             latents.append(lat)
+            latest_conv_feat = cf
             if return_masks:
                 conv_feats.append(cf)
+        self._last_conv_feat = latest_conv_feat
         depth_latent = torch.stack(latents, dim=1)  # [B, T, 128]
 
         _, hidden = self.gru(depth_latent)
@@ -242,6 +293,10 @@ class ActorCriticDepth(nn.Module):
                         affordance_candidate_x = (0.10, 0.25, 0.40, 0.55, 0.70),
                         affordance_candidate_y_offsets = (-0.08, 0.0, 0.08),
                         affordance_foot_lateral_offset = 0.11,
+                        enable_bev_safety = False,
+                        bev_safety_token_dim = 64,
+                        bev_safety_hidden_dim = 64,
+                        bev_safety_shape = (40, 30),
                         activation='elu',
                         init_noise_std=1.0,
                         max_grad_norm=10.0,
@@ -254,7 +309,10 @@ class ActorCriticDepth(nn.Module):
         self.his_latent_dim = his_latent_dim
         self.max_grad_norm = max_grad_norm
         self.enable_foot_affordance = enable_foot_affordance
+        self.enable_bev_safety = enable_bev_safety
         self.affordance_token_dim = affordance_token_dim
+        self.bev_safety_token_dim = bev_safety_token_dim
+        self.bev_safety_shape = tuple(int(x) for x in bev_safety_shape)
 
         # depth encoder
         depth_backbone = DepthOnlyFCBackbone58x87(output_dim=128, output_activation=activation)
@@ -290,6 +348,16 @@ class ActorCriticDepth(nn.Module):
             mlp_input_dim_a += 2 * affordance_token_dim
         else:
             self.foot_affordance_head = None
+        if self.enable_bev_safety:
+            self.bev_safety_head = BEVSafetyHead(
+                depth_dim=depth_backbone.output_dim,
+                token_dim=bev_safety_token_dim,
+                hidden_dim=bev_safety_hidden_dim,
+                output_shape=self.bev_safety_shape,
+            )
+            mlp_input_dim_a += bev_safety_token_dim
+        else:
+            self.bev_safety_head = None
         mlp_input_dim_c = num_critic_obs + his_latent_dim
         
         # History Encoder
@@ -366,11 +434,19 @@ class ActorCriticDepth(nn.Module):
         self.distribution = Normal(mean, mean*0. + self.std)
 
     def _build_actor_input(self, observations, his_feature, depth_feature):
+        parts = [observations, his_feature, depth_feature]
         if self.enable_foot_affordance:
             affordance_tokens, self._last_affordance_pred = self.foot_affordance_head(observations, his_feature, depth_feature)
-            return torch.cat((observations, his_feature, depth_feature, affordance_tokens), dim=-1)
-        self._last_affordance_pred = None
-        return torch.cat((observations, his_feature, depth_feature), dim=-1)
+            parts.append(affordance_tokens)
+        else:
+            self._last_affordance_pred = None
+        if self.enable_bev_safety:
+            conv_feat = getattr(self.depth_encoder, "_last_conv_feat", None)
+            bev_token, self._last_bev_safety_pred = self.bev_safety_head(depth_feature, conv_feat)
+            parts.append(bev_token)
+        else:
+            self._last_bev_safety_pred = None
+        return torch.cat(parts, dim=-1)
 
     def act(self, observations, history, depth, return_masks: bool = False, **kwargs):
         history = history.flatten(1)

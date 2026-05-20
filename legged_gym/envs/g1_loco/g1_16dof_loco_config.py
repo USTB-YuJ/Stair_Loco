@@ -53,8 +53,19 @@ class G1_16Dof_Loco_Cfg( LeggedRobotCfg ):
         dynamic_friction = 1.0
         restitution = 0.
         measure_heights = True
-        visualize_safety_map = True  # 3D terrain safety overlay
+        visualize_safety_map = False  # 3D terrain safety overlay
         safety_map_sample_spacing = 0.05
+        safety_label_use_highres = True
+        safety_label_horizontal_scale = 0.01
+        safety_label_stair_danger_margin = 0.04
+        safety_label_stair_safe_margin = 0.08
+        safety_label_store_dtype = "uint8"
+        safety_label_viz_spacing = 0.025
+        safety_label_viz_local = True
+        safety_label_viz_x_half_range = 2.0
+        safety_label_viz_y_half_range = 1.2
+        safety_label_viz_max_points = 18000
+        safety_label_viz_sphere_radius = 0.009
         measured_points_x = [-0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1, 0., 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8] # 1mx1.6m rectangle (without center line)
         measured_points_y = [-0.5, -0.4, -0.3, -0.2, -0.1, 0., 0.1, 0.2, 0.3, 0.4, 0.5]
         measure_horizontal_noise = 0.0
@@ -67,12 +78,12 @@ class G1_16Dof_Loco_Cfg( LeggedRobotCfg ):
         num_rows = 10 # number of terrain rows (levels)  # spreaded is benifitiall !
         num_cols = 30 # number of terrain cols (types)
         
-        terrain_dict = {"roughness": 0.5, 
+        terrain_dict = {"roughness": 0.2, 
                         "slope": 0.0,
                         "pit": 0.0,
                         "gap": 0.0,
-                        "stair": 0.5,
-                        "hurdle": 0.,}
+                        "stair": 0.8,
+                        "hurdle": 0.0,}
         terrain_proportions = list(terrain_dict.values())
         
         # trimesh only:
@@ -109,6 +120,11 @@ class G1_16Dof_Loco_Cfg( LeggedRobotCfg ):
         warp_device = 'cuda:0'
         compute_warp_safety_heatmap = False
         store_warp_depth_debug_stages = False
+        bev_safety_x_range = [0.0, 1.2]
+        bev_safety_y_range = [-0.45, 0.45]
+        bev_safety_resolution = 0.03
+        bev_safety_label_update_interval = 5
+        bev_safety_label_batch_size = 256
 
         enable_self_occlusion = True
         robot_geom_module = "legged_gym.utils.g1_geom"
@@ -334,6 +350,7 @@ class G1_16Dof_Loco_Cfg( LeggedRobotCfg ):
         foot_safety_box_width = 0.10
         foot_safety_box_samples_length = 5
         foot_safety_box_samples_width = 3
+        foot_safety_penalty_low_percentile = 0.5
         downstairs_com_lookahead = [0.25, 0.40, 0.55]
         downstairs_com_drop_threshold = 0.03
         downstairs_com_gate_temperature = 0.02
@@ -372,7 +389,7 @@ class G1_16Dof_Loco_Cfg( LeggedRobotCfg ):
             feet_edge = -0.5
             y_offset_pen = -0.5
             foot_safety = 1.0
-            foot_safety_penalty = -1.0
+            foot_safety_penalty = -5 # -1
             footstep_target = 0.0
             downstairs_com_back = -1.0
             footstep_skip = 0.0
@@ -384,12 +401,15 @@ class G1_16Dof_Loco_CfgPPO( LeggedRobotCfgPPO ):
     runner_class_name = 'AMPOnPolicyRunnerMulti'
 
     class policy:
-        init_noise_std = 0.8
+        init_noise_std = 0.2
         activation = 'elu' # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
         actor_hidden_dims = [512, 256, 128]
         critic_hidden_dims = [512, 256, 128]
         his_latent_dim = 64
-        enable_foot_affordance = True
+        enable_foot_affordance = False
+        enable_bev_safety = True
+        bev_safety_token_dim = 64
+        bev_safety_hidden_dim = 64
         affordance_token_dim = 32
         affordance_hidden_dim = 64
         affordance_candidate_x = [0.10, 0.25, 0.40, 0.55, 0.70]
@@ -404,7 +424,10 @@ class G1_16Dof_Loco_CfgPPO( LeggedRobotCfgPPO ):
         entropy_coef = 0.01
         policy_learning_rate = 5e-4
         seg_loss_coef = 0.0
-        affordance_loss_coef = 0.1
+        affordance_loss_coef = 0.0
+        bev_safety_loss_coef = 0.1
+        bev_safety_unsafe_weight = 4.0
+        bev_safety_transition_weight = 2.0
         affordance_safety_loss_weight = 1.0
         affordance_edge_loss_weight = 0.0
         affordance_target_loss_weight = 0.0

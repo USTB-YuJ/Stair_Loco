@@ -32,6 +32,68 @@ def _keyboard_listener():
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
+
+def _safety_bgr(score):
+    score = float(np.clip(score, 0.0, 1.0))
+    return (0, int(255 * score), int(255 * (1.0 - score)))
+
+
+def _draw_affordance_matrix(values, title, cell=54):
+    values = np.asarray(values, dtype=np.float32)
+    rows, cols = values.shape
+    top = 26
+    img = np.zeros((top + rows * cell, cols * cell, 3), dtype=np.uint8)
+    cv2.putText(img, title, (4, 17), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (235, 235, 235), 1)
+    for r in range(rows):
+        for c in range(cols):
+            score = float(values[r, c])
+            x0, y0 = c * cell, top + r * cell
+            color = _safety_bgr(score)
+            cv2.rectangle(img, (x0 + 2, y0 + 2), (x0 + cell - 2, y0 + cell - 2), color, -1)
+            cv2.rectangle(img, (x0 + 2, y0 + 2), (x0 + cell - 2, y0 + cell - 2), (40, 40, 40), 1)
+            txt = f'{score:.2f}'
+            cv2.putText(img, txt, (x0 + 8, y0 + 31), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1)
+    return img
+
+
+def _affordance_head_viz(labels, predictions, candidate_x, candidate_y_offsets):
+    if labels is None or predictions is None:
+        return None
+    labels = labels.detach().cpu().numpy()
+    predictions = predictions.detach().cpu().numpy()
+    if labels.ndim != 3 or predictions.ndim != 3:
+        return None
+    n_y = max(1, len(candidate_y_offsets))
+    n_x = max(1, min(len(candidate_x), labels.shape[1] // n_y))
+    n = n_x * n_y
+    labels = labels[:, :n, 0].reshape(2, n_x, n_y)
+    predictions = predictions[:, :n, 0].reshape(2, n_x, n_y)
+    blocks = []
+    for side, side_name in enumerate(('Left', 'Right')):
+        gt_panel = _draw_affordance_matrix(labels[side], f'{side_name} GT')
+        pred_panel = _draw_affordance_matrix(predictions[side], f'{side_name} Pred')
+        blocks.append(np.hstack((gt_panel, pred_panel)))
+    width = max(b.shape[1] for b in blocks)
+    blocks = [np.pad(b, ((0, 0), (0, width - b.shape[1]), (0, 0))) for b in blocks]
+    return np.vstack(blocks)
+
+def _bev_safety_viz(values, title, scale=8):
+    if values is None:
+        return None
+    if isinstance(values, torch.Tensor):
+        values = values.detach().float().cpu().numpy()
+    values = np.asarray(values, dtype=np.float32)
+    if values.ndim != 2:
+        return None
+    values = np.clip(values, 0.0, 1.0)
+    green = (values * 255).astype(np.uint8)
+    red = ((1.0 - values) * 255).astype(np.uint8)
+    blue = np.zeros_like(green, dtype=np.uint8)
+    img = np.stack((blue, green, red), axis=-1)
+    img = cv2.resize(img, (img.shape[1] * scale, img.shape[0] * scale), interpolation=cv2.INTER_NEAREST)
+    cv2.putText(img, title, (4, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+    return img
+
 def play(args):
     global _stop_recording
     _stop_recording = False
@@ -83,6 +145,9 @@ def play(args):
         env_cfg.footstep_guidance.enable_footstep_guidance = False
         env_cfg.footstep_guidance.visualize_stair_path = True
         env_cfg.footstep_guidance.visualize_footstep_targets = False
+        env_cfg.footstep_guidance.visualize_affordance_candidates = False
+        env_cfg.footstep_guidance.visualize_affordance_labels = False
+        env_cfg.footstep_guidance.visualize_affordance_predictions = False
         env_cfg.footstep_guidance.save_topdown_debug = False
 
     env_cfg.depth.y_angle = [48, 48]  # aligned with G1 config (was 70)
@@ -176,10 +241,37 @@ def play(args):
         if env.cfg.depth.warp_camera and hasattr(env, 'warp_safety_heatmap_buffer'):
             vis_gt_safety = env.warp_safety_heatmap_buffer[:, -1:].squeeze(1).detach().clone()
 
+        if hasattr(env, '_maybe_update_bev_safety_labels'):
+            env._maybe_update_bev_safety_labels(force=True)
+        if (getattr(ppo_runner.alg.actor_critic, 'enable_foot_affordance', False)
+                and hasattr(env, '_maybe_update_foot_affordance_labels')):
+            env._maybe_update_foot_affordance_labels(force=True)
+
         if isinstance(obs, tuple):
             actions = policy(obs[0].detach(), trajectory_history.detach(), obs[1].detach())
         else:
             actions = policy(obs.detach(), trajectory_history)
+
+        bev_pred = getattr(ppo_runner.alg.actor_critic, '_last_bev_safety_pred', None)
+        if bev_pred is not None and getattr(env, 'bev_safety_labels', None) is not None:
+            gt_panel = _bev_safety_viz(env.bev_safety_labels[0, 0], 'BEV Safety GT')
+            pred_panel = _bev_safety_viz(bev_pred[0], 'BEV Safety Pred')
+            if gt_panel is not None and pred_panel is not None:
+                cv2.imshow('BEV Safety GT', gt_panel)
+                cv2.imshow('BEV Safety Pred', pred_panel)
+                cv2.waitKey(1)
+
+        affordance_pred = getattr(ppo_runner.alg.actor_critic, '_last_affordance_pred', None)
+        if hasattr(env, 'set_foot_affordance_predictions'):
+            env.set_foot_affordance_predictions(affordance_pred)
+        if affordance_pred is not None and hasattr(env, 'foot_affordance_labels'):
+            fg_cfg = getattr(env.cfg, 'footstep_guidance', None)
+            candidate_x = getattr(fg_cfg, 'affordance_candidate_x', [0.10, 0.25, 0.40, 0.55, 0.70]) if fg_cfg is not None else [0.10, 0.25, 0.40, 0.55, 0.70]
+            candidate_y_offsets = getattr(fg_cfg, 'affordance_candidate_y_offsets', [-0.08, 0.0, 0.08]) if fg_cfg is not None else [-0.08, 0.0, 0.08]
+            panel = _affordance_head_viz(env.foot_affordance_labels[0], affordance_pred[0], candidate_x, candidate_y_offsets)
+            if panel is not None:
+                cv2.imshow('Foot Affordance Head', panel)
+                cv2.waitKey(1)
 
         vis_pred_safety = None
         pred_masks = getattr(ppo_runner.alg.actor_critic, "_last_pred_masks", None)
@@ -211,6 +303,9 @@ def play(args):
                         arr = np.zeros_like(arr, dtype=np.uint8)
                     col = cv2.applyColorMap(arr, cv2.COLORMAP_INFERNO)
                 return cv2.resize(col, (col.shape[1]*scale, col.shape[0]*scale), interpolation=cv2.INTER_NEAREST)
+            raw_safety = getattr(env, '_warp_safety_raw_full', None)
+            valid_mask = getattr(env, '_warp_safety_valid_full', None)
+            final_safety = getattr(env, '_warp_safety_final_full', None)
             stages = [
                 # ("1.raw",        env._depth_stage_raw),
                 # ("2.+gaussian",  env._depth_stage_gaussian),
@@ -221,7 +316,9 @@ def play(args):
                 # ("7.normalized", env._depth_stage_normalized),
                 # ("8.+filter",    env._raw_warp_depth),
                 # ("9.final",      env.warp_depth_buffer[:, -1:].squeeze(1)),
-                ("Safety",      vis_gt_safety if vis_gt_safety is not None else env.warp_safety_heatmap_buffer[:, -1:].squeeze(1)),
+                ("Raw Safety", raw_safety if raw_safety is not None else (vis_gt_safety if vis_gt_safety is not None else env.warp_safety_heatmap_buffer[:, -1:].squeeze(1))),
+                ("Valid Mask", valid_mask if valid_mask is not None else torch.ones_like(vis_gt_safety if vis_gt_safety is not None else env.warp_safety_heatmap_buffer[:, -1:].squeeze(1))),
+                ("Final Safety", final_safety if final_safety is not None else (vis_gt_safety if vis_gt_safety is not None else env.warp_safety_heatmap_buffer[:, -1:].squeeze(1))),
                 ("Pred Safety", vis_pred_safety if vis_pred_safety is not None else torch.zeros(1, *env.cfg.depth.resized, device=env.device)),
             ]
             # debug: first 5 steps only
@@ -236,7 +333,7 @@ def play(args):
                 print(f"[DEBUG] _warp2cam: {_w2c is not None if hasattr(env,'_warp2cam') else 'NA'}, height_samples: {env.height_samples is not None}")
             panels = []
             for label, t in stages:
-                mode = "safety" if label == "Safety" else "inferno"
+                mode = "safety" if ("Safety" in label or "Valid" in label) else "inferno"
                 p = _to_vis(t, mode=mode)
                 cv2.putText(p, label, (4, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255,255,255), 1)
                 panels.append(p)
@@ -333,11 +430,11 @@ def play(args):
             print('Warning: No frames captured')
 
 if __name__ == '__main__':
-    EXPORT_POLICY = True
+    EXPORT_POLICY = False
     args = get_args()
     # args.task = "h1_loco"
     args.task = "g1_16dof_loco"
-    args.load_run = "/root/gpufree-data/workspace/more/logs/g1_16dof_loco/May18_12-41-50_"
+    args.load_run = "/root/gpufree-data/workspace/more/logs/g1_16dof_loco/May19_23-55-37_"
     args.record = True
     args.headless = not args.record  # need viewer for recording
     args.save_depth = False

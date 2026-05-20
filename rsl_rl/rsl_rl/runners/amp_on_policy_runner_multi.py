@@ -84,6 +84,9 @@ class AMPOnPolicyRunnerMulti:
         actor_critic_kwargs = dict(self.policy_cfg)
         if self.use_depth and actor_critic_class.__name__ == "ActorCriticDepth":
             actor_critic_kwargs["depth_buffer_len"] = self.env.cfg.depth.buffer_len
+            bev_safety_labels = getattr(self.env, "bev_safety_labels", None)
+            if bev_safety_labels is not None:
+                actor_critic_kwargs["bev_safety_shape"] = tuple(bev_safety_labels.shape[2:])
         actor_critic: ActorCritic = actor_critic_class( num_actor_obs=num_actor_obs,
                                                         num_critic_obs=num_critic_obs,
                                                         num_actions=self.env.num_actions,
@@ -130,6 +133,10 @@ class AMPOnPolicyRunnerMulti:
         if (self.use_depth and getattr(actor_critic, "enable_foot_affordance", False)
                 and hasattr(self.env, "foot_affordance_labels")):
             foot_affordance_shape = tuple(self.env.foot_affordance_labels.shape[1:])
+        bev_safety_shape = None
+        if (self.use_depth and getattr(actor_critic, "enable_bev_safety", False)
+                and getattr(self.env, "bev_safety_labels", None) is not None):
+            bev_safety_shape = tuple(self.env.bev_safety_labels.shape[1:])
         self.alg.init_storage(self.env.num_envs, 
                               self.num_steps_per_env, 
                               [num_actor_obs], 
@@ -139,7 +146,8 @@ class AMPOnPolicyRunnerMulti:
                               self.env.num_obs,
                               depth_shape=self.depth_shape if self.use_depth else None,
                               depth_buffer_len=self.env.cfg.depth.buffer_len if self.use_depth else None,
-                              foot_affordance_shape=foot_affordance_shape)
+                              foot_affordance_shape=foot_affordance_shape,
+                              bev_safety_shape=bev_safety_shape)
 
         # Log
         self.log_dir = log_dir
@@ -196,6 +204,7 @@ class AMPOnPolicyRunnerMulti:
                     history = self.trajectory_history
                     current_gt_safety_heatmap = None
                     current_foot_affordance_labels = None
+                    current_bev_safety_labels = None
                     if infos["depth"] is not None:
                         depth_image = infos['depth']
                     if self.use_depth:
@@ -209,12 +218,21 @@ class AMPOnPolicyRunnerMulti:
                             elif hasattr(self.env, '_update_foot_affordance_labels'):
                                 self.env._update_foot_affordance_labels()
                             current_foot_affordance_labels = self.env.foot_affordance_labels.clone().to(self.device)
+                        if (getattr(self.alg.actor_critic, "enable_bev_safety", False)
+                                and getattr(self.env, 'bev_safety_labels', None) is not None):
+                            if hasattr(self.env, '_maybe_update_bev_safety_labels'):
+                                self.env._maybe_update_bev_safety_labels()
+                            elif hasattr(self.env, '_update_bev_safety_labels'):
+                                self.env._update_bev_safety_labels()
+                            current_bev_safety_labels = self.env.bev_safety_labels.clone().to(self.device)
 
                     actions = self.alg.act(obs, critic_obs, history)
                     if current_gt_safety_heatmap is not None:
                         self.alg.transition.gt_safety_heatmap = current_gt_safety_heatmap
                     if current_foot_affordance_labels is not None:
                         self.alg.transition.foot_affordance_labels = current_foot_affordance_labels
+                    if current_bev_safety_labels is not None:
+                        self.alg.transition.bev_safety_labels = current_bev_safety_labels
                     obs, privileged_obs, rewards, dones, infos, _, terminal_amp_states, terminal_obs, terminal_critic_obs = self.env.step(actions)
                     
                     critic_obs = privileged_obs if privileged_obs is not None else obs
@@ -326,6 +344,13 @@ class AMPOnPolicyRunnerMulti:
             self.writer.add_scalar('Loss/affordance_safety', self.alg.last_affordance_safety_loss, locs['it'])
             self.writer.add_scalar('Loss/affordance_edge', self.alg.last_affordance_edge_loss, locs['it'])
             self.writer.add_scalar('Loss/affordance_target', self.alg.last_affordance_target_loss, locs['it'])
+        if hasattr(self.alg, 'last_bev_safety_loss'):
+            self.writer.add_scalar('Loss/bev_safety', self.alg.last_bev_safety_loss, locs['it'])
+            self.writer.add_scalar('BEV/pred_mean', self.alg.last_bev_pred_mean, locs['it'])
+            self.writer.add_scalar('BEV/gt_mean', self.alg.last_bev_gt_mean, locs['it'])
+            self.writer.add_scalar('BEV/pred_std', self.alg.last_bev_pred_std, locs['it'])
+            self.writer.add_scalar('BEV/gt_std', self.alg.last_bev_gt_std, locs['it'])
+            self.writer.add_scalar('BEV/unsafe_recall', self.alg.last_bev_unsafe_recall, locs['it'])
         self.writer.add_scalar('Perf/total_fps', fps, locs['it'])
         self.writer.add_scalar('Perf/collection time', locs['collection_time'], locs['it'])
         self.writer.add_scalar('Perf/learning_time', locs['learn_time'], locs['it'])
@@ -353,6 +378,35 @@ class AMPOnPolicyRunnerMulti:
                 plt.close(fig)
             except Exception as e:
                 print(f"[HEATMAP_VIZ] Failed: {e}")
+
+        # BEV safety visualization: one env sample is enough to diagnose whether the head learns edges.
+        if locs['it'] % 500 == 0 and hasattr(self.alg, '_last_pred_bev_safety') and self.alg._last_pred_bev_safety is not None:
+            try:
+                import matplotlib
+                matplotlib.use('Agg')
+                import matplotlib.pyplot as plt
+                import numpy as np
+                gt = self.alg._last_gt_bev_safety[0, 0].cpu().numpy()
+                pred = self.alg._last_pred_bev_safety[0].cpu().numpy()
+                valid = self.alg._last_gt_bev_safety[0, 1].cpu().numpy()
+                pred = np.clip(pred, 0.0, 1.0)
+                gt = np.clip(gt, 0.0, 1.0)
+                fig, axes = plt.subplots(1, 4, figsize=(13, 3.5))
+                axes[0].imshow(gt, vmin=0, vmax=1, cmap='RdYlGn')
+                axes[0].set_title('BEV GT Safety')
+                axes[1].imshow(pred, vmin=0, vmax=1, cmap='RdYlGn')
+                axes[1].set_title('BEV Pred Safety')
+                axes[2].imshow(np.abs(gt - pred), vmin=0, vmax=1, cmap='hot')
+                axes[2].set_title('|GT - Pred|')
+                axes[3].imshow(valid, vmin=0, vmax=1, cmap='gray')
+                axes[3].set_title('Valid Mask')
+                for ax in axes:
+                    ax.axis('off')
+                plt.tight_layout()
+                self.writer.add_figure('BEV/safety_map', fig, locs['it'])
+                plt.close(fig)
+            except Exception as e:
+                print(f"[BEV_VIZ] Failed: {e}")
         if len(locs['rewbuffer']) > 0:
             self.writer.add_scalar('Train/mean_reward', statistics.mean(locs['rewbuffer']), locs['it'])
             self.writer.add_scalar('Train/mean_episode_length', statistics.mean(locs['lenbuffer']), locs['it'])

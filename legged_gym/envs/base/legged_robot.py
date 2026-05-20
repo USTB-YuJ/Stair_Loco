@@ -258,15 +258,10 @@ class LeggedRobot(BaseTask):
             pts_cam_warp = torch.stack([z, -x_c, -y_c], dim=-1)
             pts_world = (cam_rot_world[:, None, None] @ pts_cam_warp.unsqueeze(-1)).squeeze(-1) + cam_pos_world[:, None, None]
 
-            hs = self.terrain.cfg.horizontal_scale
-            border = self.terrain.cfg.border_size
-            map_x, map_y = self.terrain_safety_map.shape
-            px = ((pts_world[..., 0] + border) / hs).long().clamp(0, map_x - 1)
-            py = ((pts_world[..., 1] + border) / hs).long().clamp(0, map_y - 1)
-
-            safety_heatmap = self.terrain_safety_map[px, py]  # [B, H_orig, W_orig], x indexes rows and y indexes cols
-            # height_diff filter: exclude body pixels and vertical surfaces
             pts_xy_flat = pts_world[..., :2].reshape(-1, 2)
+            safety_heatmap_raw = self._query_safety_at_points(pts_xy_flat).reshape(pts_world.shape[0], pts_world.shape[1], pts_world.shape[2])
+            safety_heatmap = safety_heatmap_raw
+            # height_diff filter: exclude body pixels and vertical surfaces
             terrain_h = self._query_height_at_points(pts_xy_flat).reshape(pts_world.shape[0], pts_world.shape[1], pts_world.shape[2])
             height_diff = torch.abs(pts_world[..., 2] - terrain_h)
             valid = (depth_safety_m > 0) & (height_diff < 0.15)
@@ -276,7 +271,10 @@ class LeggedRobot(BaseTask):
                 hd = height_diff[valid].mean().item() if valid.any() else 0
                 sm = safety_heatmap[valid].mean().item() if valid.any() else 0
                 print(f"[GT_HEATMAP] valid_pixels={vf:.3f} mean_height_diff={hd:.4f}m mean_safety={sm:.4f}")
+            self._warp_safety_raw_full = safety_heatmap_raw.detach()
+            self._warp_safety_valid_full = valid.float().detach()
             safety_heatmap = safety_heatmap * valid.float()
+            self._warp_safety_final_full = safety_heatmap.detach()
 
 
         # add noise to raw depth images
@@ -391,37 +389,64 @@ class LeggedRobot(BaseTask):
         start_y = border_px + col * wid_px
         end_y = start_y + wid_px
 
-        spacing = getattr(self.cfg.terrain, "safety_map_sample_spacing", 0.2)
-        stride = max(1, int(round(spacing / self.terrain.cfg.horizontal_scale)))
-        n_x = max(1, (end_x - start_x + stride - 1) // stride)
-        n_y = max(1, (end_y - start_y + stride - 1) // stride)
-        max_points = 2500
-        if n_x * n_y > max_points:
-            factor = int(np.ceil(np.sqrt((n_x * n_y) / max_points)))
-            stride *= max(1, factor)
-
-        xs_idx = torch.arange(start_x, end_x, stride, device=self.device)
-        ys_idx = torch.arange(start_y, end_y, stride, device=self.device)
-        if xs_idx.numel() == 0 or ys_idx.numel() == 0:
-            return
-
-        safety = self.terrain_safety_map[start_x:end_x:stride, start_y:end_y:stride]
-        height = self.height_samples[start_x:end_x:stride, start_y:end_y:stride].float() * self.terrain.cfg.vertical_scale
-
+        terrain_cfg = self.cfg.terrain
         scale = self.terrain.cfg.horizontal_scale
         border_m = self.terrain.cfg.border_size
-        xs = xs_idx.float() * scale - border_m
-        ys = ys_idx.float() * scale - border_m
+        patch_x_min = start_x * scale - border_m
+        patch_x_max = (end_x - 1) * scale - border_m
+        patch_y_min = start_y * scale - border_m
+        patch_y_max = (end_y - 1) * scale - border_m
+
+        spacing = float(getattr(terrain_cfg, "safety_label_viz_spacing",
+                                getattr(terrain_cfg, "safety_map_sample_spacing", 0.2)))
+        spacing = max(0.005, spacing)
+        use_local = bool(getattr(terrain_cfg, "safety_label_viz_local", False))
+        if use_local and hasattr(self, "root_states"):
+            center_xy = self.root_states[env_id, :2]
+            x_half = float(getattr(terrain_cfg, "safety_label_viz_x_half_range", 2.0))
+            y_half = float(getattr(terrain_cfg, "safety_label_viz_y_half_range", 1.2))
+            x_min = max(patch_x_min, float(center_xy[0].item()) - x_half)
+            x_max = min(patch_x_max, float(center_xy[0].item()) + x_half)
+            y_min = max(patch_y_min, float(center_xy[1].item()) - y_half)
+            y_max = min(patch_y_max, float(center_xy[1].item()) + y_half)
+        else:
+            x_min, x_max = patch_x_min, patch_x_max
+            y_min, y_max = patch_y_min, patch_y_max
+
+        if x_max <= x_min or y_max <= y_min:
+            return
+
+        n_x = max(1, int(np.floor((x_max - x_min) / spacing)) + 1)
+        n_y = max(1, int(np.floor((y_max - y_min) / spacing)) + 1)
+        max_points = int(getattr(terrain_cfg, "safety_label_viz_max_points", 2500))
+        if n_x * n_y > max_points:
+            factor = np.sqrt((n_x * n_y) / max(max_points, 1))
+            spacing *= float(factor)
+            n_x = max(1, int(np.floor((x_max - x_min) / spacing)) + 1)
+            n_y = max(1, int(np.floor((y_max - y_min) / spacing)) + 1)
+
+        xs = x_min + torch.arange(n_x, device=self.device, dtype=torch.float) * spacing
+        ys = y_min + torch.arange(n_y, device=self.device, dtype=torch.float) * spacing
+        xs = torch.clamp(xs, max=patch_x_max)
+        ys = torch.clamp(ys, max=patch_y_max)
+        if xs.numel() == 0 or ys.numel() == 0:
+            return
+
         grid_x, grid_y = torch.meshgrid(xs, ys, indexing="ij")
-        z = height
+        safety_xy = torch.stack([grid_x, grid_y], dim=-1).reshape(-1, 2)
+        z = self._query_height_at_points(safety_xy).reshape(grid_x.shape)
+        safety = self._query_safety_at_points(safety_xy).reshape(grid_x.shape)
 
         pts = torch.stack([grid_x, grid_y, z], dim=-1).reshape(-1, 3).cpu().numpy()
         safety_vals = safety.reshape(-1).clamp(0.0, 1.0).cpu().numpy()
 
-        if not hasattr(self, "_safety_viz_geoms"):
-            radius = max(0.02, 0.25 * scale)
+        radius = float(getattr(terrain_cfg, "safety_label_viz_sphere_radius", max(0.006, 0.35 * spacing)))
+        if (not hasattr(self, "_safety_viz_geoms") or
+                not hasattr(self, "_safety_viz_geom_radius") or
+                abs(self._safety_viz_geom_radius - radius) > 1e-6):
             colors = [(1.0, 0.0, 0.0), (0.75, 0.25, 0.0), (0.5, 0.5, 0.0), (0.25, 0.75, 0.0), (0.0, 1.0, 0.0)]
             self._safety_viz_geoms = [gymutil.WireframeSphereGeometry(radius, 6, 6, None, color=c) for c in colors]
+            self._safety_viz_geom_radius = radius
 
         self.gym.clear_lines(self.viewer)
         bins = len(self._safety_viz_geoms)
@@ -1158,6 +1183,163 @@ class LeggedRobot(BaseTask):
         sm = self.terrain_safety_map
         print(f"[SAFETY_MAP] min={sm.min().item():.4f} max={sm.max().item():.4f} mean={sm.mean().item():.4f}")
         print(f"[SAFETY_MAP] fraction<0.5: {(sm < 0.5).float().mean().item():.3f}  fraction>0.9: {(sm > 0.9).float().mean().item():.3f}")
+        if bool(getattr(self.cfg.terrain, "safety_label_use_highres", False)):
+            self._build_terrain_safety_label_map()
+
+
+    def _build_terrain_safety_label_map(self):
+        if not hasattr(self, "terrain_safety_map") or not hasattr(self, "terrain"):
+            return
+        label_scale = float(getattr(self.cfg.terrain, "safety_label_horizontal_scale", 0.01))
+        if label_scale <= 0:
+            return
+        phys_scale = float(self.terrain.cfg.horizontal_scale)
+        label_rows = int(np.ceil(self.terrain.tot_rows * phys_scale / label_scale))
+        label_cols = int(np.ceil(self.terrain.tot_cols * phys_scale / label_scale))
+        old_map_cpu = self.terrain_safety_map.detach().float().cpu().unsqueeze(0).unsqueeze(0)
+        label_map = F.interpolate(old_map_cpu, size=(label_rows, label_cols), mode="bilinear", align_corners=False)[0, 0].contiguous()
+
+        stair_class = int(getattr(getattr(self.cfg, "footstep_guidance", None), "stair_env_class", 4))
+        terrain_type = getattr(self.terrain, "terrain_type", None)
+        first_stair_stats = None
+        if terrain_type is not None:
+            danger_margin = float(getattr(self.cfg.terrain, "safety_label_stair_danger_margin", 0.04))
+            safe_margin = float(getattr(self.cfg.terrain, "safety_label_stair_safe_margin", 0.08))
+            for row in range(terrain_type.shape[0]):
+                for col in range(terrain_type.shape[1]):
+                    if int(terrain_type[row, col]) != stair_class:
+                        continue
+                    start_x = self.terrain.border + row * self.terrain.length_per_env_pixels
+                    end_x = start_x + self.terrain.length_per_env_pixels
+                    start_y = self.terrain.border + col * self.terrain.width_per_env_pixels
+                    end_y = start_y + self.terrain.width_per_env_pixels
+                    hr0 = int(round(start_x * phys_scale / label_scale))
+                    hr1 = int(round(end_x * phys_scale / label_scale))
+                    hc0 = int(round(start_y * phys_scale / label_scale))
+                    hc1 = int(round(end_y * phys_scale / label_scale))
+                    hr0, hc0 = max(0, hr0), max(0, hc0)
+                    hr1, hc1 = min(label_rows, hr1), min(label_cols, hc1)
+                    if hr1 <= hr0 or hc1 <= hc0:
+                        continue
+                    patch_h = self.terrain.height_field_raw[start_x:end_x, start_y:end_y]
+                    patch_label, patch_stats = self._build_stair_safety_label_patch(
+                        patch_h, hr1 - hr0, hc1 - hc0, label_scale, danger_margin, safe_margin)
+                    label_map[hr0:hr1, hc0:hc1] = torch.from_numpy(patch_label)
+                    if first_stair_stats is None:
+                        first_stair_stats = patch_stats
+
+        label_map = torch.clamp(label_map, 0.0, 1.0)
+        store_dtype = str(getattr(self.cfg.terrain, "safety_label_store_dtype", "uint8")).lower()
+        if store_dtype == "uint8":
+            stored = torch.round(label_map * 255.0).to(torch.uint8)
+        else:
+            stored = label_map.float()
+        self.terrain_safety_label_horizontal_scale = label_scale
+        self.terrain_safety_label_map = stored.to(self.device)
+        mb = self.terrain_safety_label_map.numel() * self.terrain_safety_label_map.element_size() / (1024.0 * 1024.0)
+        vals = label_map
+        print(f"[SAFETY_LABEL_MAP] old_shape={tuple(self.terrain_safety_map.shape)} new_shape={tuple(self.terrain_safety_label_map.shape)} scale={label_scale:.3f} dtype={self.terrain_safety_label_map.dtype} mem={mb:.1f}MB")
+        print(f"[SAFETY_LABEL_MAP] min={vals.min().item():.4f} max={vals.max().item():.4f} mean={vals.mean().item():.4f}")
+        if first_stair_stats is not None:
+            print("[SAFETY_LABEL_MAP] stair_sample " + ", ".join(f"{k}={v:.4f}" for k, v in first_stair_stats.items()))
+
+    def _build_stair_safety_label_patch(self, patch_height_raw, out_rows, out_cols, label_scale, danger_margin, safe_margin):
+        from scipy.ndimage import distance_transform_edt
+        h = patch_height_raw.astype(np.float32) * float(self.terrain.cfg.vertical_scale)
+        edge_threshold = float(getattr(self.cfg.terrain, "safety_label_edge_height_threshold", 0.015))
+        edge_mask = np.zeros((out_rows, out_cols), dtype=np.bool_)
+        if h.size == 0 or out_rows <= 0 or out_cols <= 0:
+            return np.ones((max(out_rows, 0), max(out_cols, 0)), dtype=np.float32), {}
+
+        row_scale = out_rows / max(1, h.shape[0])
+        col_scale = out_cols / max(1, h.shape[1])
+        dx = h[1:, :] - h[:-1, :]
+        xs, ys = np.nonzero(np.abs(dx) > edge_threshold)
+        for x, y in zip(xs, ys):
+            # Match convert_heightfield_to_trimesh(): rising edges are placed at
+            # x+1, while falling edges are verticalized back to x.
+            edge_x = x + 1 if dx[x, y] > 0.0 else x
+            r = int(round(edge_x * row_scale))
+            c0 = int(np.floor(y * col_scale))
+            c1 = int(np.ceil((y + 1) * col_scale))
+            if 0 <= r < out_rows:
+                edge_mask[r:r + 1, max(0, c0):min(out_cols, c1)] = True
+
+        dy = h[:, 1:] - h[:, :-1]
+        xs, ys = np.nonzero(np.abs(dy) > edge_threshold)
+        for x, y in zip(xs, ys):
+            edge_y = y + 1 if dy[x, y] > 0.0 else y
+            c = int(round(edge_y * col_scale))
+            r0 = int(np.floor(x * row_scale))
+            r1 = int(np.ceil((x + 1) * row_scale))
+            if 0 <= c < out_cols:
+                edge_mask[max(0, r0):min(out_rows, r1), c:c + 1] = True
+
+        if not edge_mask.any():
+            label = np.ones((out_rows, out_cols), dtype=np.float32)
+            return label, {"edge_mean": 1.0, "interior_mean": 1.0, "edge_fraction": 0.0}
+
+        dist_m = distance_transform_edt(~edge_mask).astype(np.float32) * float(label_scale)
+        denom = max(float(safe_margin - danger_margin), 1e-6)
+        t = np.clip((dist_m - float(danger_margin)) / denom, 0.0, 1.0)
+        label = (t * t * (3.0 - 2.0 * t)).astype(np.float32)
+        edge_region = dist_m <= float(danger_margin)
+        interior_region = dist_m >= float(safe_margin)
+        trans_region = (~edge_region) & (~interior_region)
+        stats = {
+            "edge_mean": float(label[edge_region].mean()) if edge_region.any() else 0.0,
+            "transition_mean": float(label[trans_region].mean()) if trans_region.any() else 0.0,
+            "interior_mean": float(label[interior_region].mean()) if interior_region.any() else 0.0,
+            "edge_fraction": float(edge_region.mean()),
+        }
+        return label, stats
+
+    def _safety_map_for_query(self, use_label_map=True):
+        if (use_label_map and bool(getattr(self.cfg.terrain, "safety_label_use_highres", False)) and
+                hasattr(self, "terrain_safety_label_map")):
+            return self.terrain_safety_label_map, float(self.terrain_safety_label_horizontal_scale)
+        return self.terrain_safety_map, float(self.terrain.cfg.horizontal_scale)
+
+    def _safety_values_to_float(self, values):
+        if values.dtype == torch.uint8:
+            return values.float() / 255.0
+        return values.float()
+
+    def _query_safety_at_points(self, points_xy, use_label_map=True, bilinear=True):
+        if points_xy.numel() == 0:
+            return torch.empty(points_xy.shape[:-1], dtype=torch.float, device=points_xy.device)
+        safety_map, scale = self._safety_map_for_query(use_label_map=use_label_map)
+        flat = points_xy.reshape(-1, 2)
+        border = float(self.terrain.cfg.border_size)
+        map_x, map_y = safety_map.shape
+        px_f = (flat[:, 0] + border) / scale
+        py_f = (flat[:, 1] + border) / scale
+        inside = (px_f >= 0.0) & (px_f <= map_x - 1) & (py_f >= 0.0) & (py_f <= map_y - 1)
+        if not bilinear:
+            px = torch.round(px_f).long().clamp(0, map_x - 1)
+            py = torch.round(py_f).long().clamp(0, map_y - 1)
+            vals = self._safety_values_to_float(safety_map[px, py])
+            vals = vals * inside.float()
+            return vals.reshape(points_xy.shape[:-1])
+
+        px0_f = torch.floor(px_f)
+        py0_f = torch.floor(py_f)
+        px0 = px0_f.long().clamp(0, map_x - 1)
+        py0 = py0_f.long().clamp(0, map_y - 1)
+        px1 = (px0 + 1).clamp(0, map_x - 1)
+        py1 = (py0 + 1).clamp(0, map_y - 1)
+        wx = (px_f - px0_f).clamp(0.0, 1.0)
+        wy = (py_f - py0_f).clamp(0.0, 1.0)
+        v00 = self._safety_values_to_float(safety_map[px0, py0])
+        v10 = self._safety_values_to_float(safety_map[px1, py0])
+        v01 = self._safety_values_to_float(safety_map[px0, py1])
+        v11 = self._safety_values_to_float(safety_map[px1, py1])
+        vals = ((1.0 - wx) * (1.0 - wy) * v00 +
+                wx * (1.0 - wy) * v10 +
+                (1.0 - wx) * wy * v01 +
+                wx * wy * v11)
+        vals = vals * inside.float()
+        return vals.reshape(points_xy.shape[:-1])
 
     def attach_camera(self, i, env_handle, actor_handle):
         if self.cfg.depth.use_camera:
@@ -1587,23 +1769,19 @@ class LeggedRobot(BaseTask):
         return safety
 
     def _get_foot_safety(self, foot_xy):
-        """foot_xy: [N, 2] world (x,y) -> area-weighted safety [N] from precomputed map.
-        G1 foot sole: 0.208m x 0.076m (from ankle_roll_link.STL bounding box).
-        """
+        """foot_xy: [N, 2] world (x,y) -> area-weighted safety [N]."""
         if foot_xy.shape[0] == 0:
-            return torch.empty(0, dtype=self.terrain_safety_map.dtype, device=foot_xy.device)
+            return torch.empty(0, dtype=torch.float, device=foot_xy.device)
 
-        s = self.terrain.cfg.horizontal_scale  # 0.05m
-        b = self.terrain.cfg.border_size
-        hl, hw = 0.104, 0.038  # half length (x), half width (y)
-
-        map_x, map_y = self.terrain_safety_map.shape
+        safety_map, s = self._safety_map_for_query(use_label_map=True)
+        b = float(self.terrain.cfg.border_size)
+        hl, hw = 0.104, 0.038
+        map_x, map_y = safety_map.shape
         x0 = torch.floor((foot_xy[:, 0] - hl + b) / s).long().clamp(0, map_x - 1)
         x1 = torch.floor((foot_xy[:, 0] + hl + b) / s).long().clamp(0, map_x - 1)
         y0 = torch.floor((foot_xy[:, 1] - hw + b) / s).long().clamp(0, map_y - 1)
         y1 = torch.floor((foot_xy[:, 1] + hw + b) / s).long().clamp(0, map_y - 1)
 
-        # Fixed-size candidate windows cover every grid cell touched by the foot rectangle.
         max_x_cells = int(np.ceil((2 * hl) / s)) + 2
         max_y_cells = int(np.ceil((2 * hw) / s)) + 2
         xs = (x0[:, None] + torch.arange(max_x_cells, device=foot_xy.device)[None, :]).clamp(max=map_x - 1)
@@ -1624,7 +1802,7 @@ class LeggedRobot(BaseTask):
         wy = wy * valid_y.float()
 
         area = wx[:, :, None] * wy[:, None, :]
-        safety = self.terrain_safety_map[xs[:, :, None], ys[:, None, :]]
+        safety = self._safety_values_to_float(safety_map[xs[:, :, None], ys[:, None, :]])
         return (safety * area).sum(dim=(1, 2)) / area.sum(dim=(1, 2)).clamp(min=1e-8)
 
     def _query_height_at_points(self, points_xy):
