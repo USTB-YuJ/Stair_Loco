@@ -174,6 +174,36 @@ def joint_deviation_l1_always(
     return torch.sum(torch.abs(angle), dim=1)
 
 
+def joint_deviation_l1_turn_relaxed(
+    env: BaseEnv | TienKungEnv | G1Env,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    command_threshold: float = 0.1,
+    active_command_scale: float = 0.0,
+    yaw_threshold: float = 0.25,
+    turn_command_scale: float = 0.0,
+) -> torch.Tensor:
+    """Penalize hip deviation less when a yaw command needs hip-yaw authority."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    angle = asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+    deviation = torch.sum(torch.abs(angle), dim=1)
+
+    command = env.command_generator.command
+    command_magnitude = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+    yaw_magnitude = torch.abs(command[:, 2])
+    scale = torch.ones_like(deviation)
+    scale = torch.where(
+        command_magnitude > float(command_threshold),
+        torch.full_like(scale, float(active_command_scale)),
+        scale,
+    )
+    scale = torch.where(
+        yaw_magnitude > float(yaw_threshold),
+        torch.full_like(scale, float(turn_command_scale)),
+        scale,
+    )
+    return deviation * scale
+
+
 def body_orientation_l2(
     env: BaseEnv | TienKungEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:
@@ -385,6 +415,31 @@ def gait_phase_contact(
 
 
 
+def terrain_scaled_gait_phase_contact(
+    env: BaseEnv,
+    sensor_cfg: SceneEntityCfg,
+    stance_threshold: float = 0.55,
+    stair_scale: float = 0.25,
+    turn_yaw_threshold: float = 0.35,
+    turn_scale: float = 0.5,
+) -> torch.Tensor:
+    """Scale gait-phase contact guidance down on stair terrains and high-yaw turns."""
+    reward = gait_phase_contact(env, sensor_cfg=sensor_cfg, stance_threshold=stance_threshold)
+    scale = torch.ones_like(reward)
+
+    get_masks = getattr(env.command_generator, "get_terrain_category_masks", None)
+    if get_masks is not None:
+        masks = get_masks(torch.arange(env.num_envs, device=env.device))
+        stairs_mask = masks.get("stairs")
+        if stairs_mask is not None:
+            scale = torch.where(stairs_mask, torch.full_like(scale, float(stair_scale)), scale)
+
+    yaw_cmd = torch.abs(env.command_generator.command[:, 2])
+    turn_mask = yaw_cmd > float(turn_yaw_threshold)
+    scale = torch.where(turn_mask, scale * float(turn_scale), scale)
+    return reward * scale
+
+
 def feet_swing_height(
     env: BaseEnv, 
     sensor_cfg: SceneEntityCfg,
@@ -419,6 +474,55 @@ def feet_swing_height(
     
     return torch.sum(pos_error, dim=-1)
 
+
+
+def terrain_aware_feet_swing_height(
+    env: BaseEnv,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    base_clearance: float = 0.08,
+    obstacle_clearance: float = 0.04,
+    max_clearance: float = 0.30,
+    high_tolerance: float = 0.12,
+    low_penalty_scale: float = 1.0,
+    high_penalty_scale: float = 0.25,
+    stance_threshold: float = 0.55,
+) -> torch.Tensor:
+    """Penalize insufficient swing-foot clearance relative to local terrain and obstacles."""
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    net_contact_forces = contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids, :]
+    contact = torch.norm(net_contact_forces, dim=-1) > 1.0
+    feet_pos_z = asset.data.body_pos_w[:, asset_cfg.body_ids, 2]
+
+    num_feet = feet_pos_z.shape[1]
+    if hasattr(env, "leg_phase") and env.leg_phase.shape[-1] == num_feet:
+        swing_mask = env.leg_phase >= stance_threshold
+    else:
+        swing_mask = ~contact
+
+    terrain_height = getattr(env, "terrain_height_at_feet", None)
+    if terrain_height is None or terrain_height.shape[-1] != num_feet:
+        terrain_height = torch.zeros_like(feet_pos_z)
+
+    obstacle_height = getattr(env, "forward_obstacle_height", None)
+    if obstacle_height is None or obstacle_height.shape[-1] != num_feet:
+        obstacle_height = torch.zeros_like(feet_pos_z)
+
+    obstacle_bonus = torch.where(
+        obstacle_height > 0.01,
+        torch.full_like(obstacle_height, obstacle_clearance),
+        torch.zeros_like(obstacle_height),
+    )
+    target_clearance = torch.clamp(base_clearance + obstacle_height + obstacle_bonus, max=max_clearance)
+    feet_clearance = feet_pos_z - terrain_height
+
+    clearance_deficit = torch.clamp(target_clearance - feet_clearance, min=0.0)
+    clearance_excess = torch.clamp(feet_clearance - target_clearance - high_tolerance, min=0.0)
+    penalty = low_penalty_scale * torch.square(clearance_deficit)
+    penalty += high_penalty_scale * torch.square(clearance_excess)
+    return torch.sum(penalty * swing_mask.float(), dim=-1)
 
 def base_height(
     env: BaseEnv,
@@ -556,4 +660,60 @@ def idle_when_commanded(
     is_idle = vel_magnitude < vel_threshold       # But not moving
     
     return (is_commanded & is_idle).float()
+
+
+def idle_when_commanded_xy_yaw(
+    env: BaseEnv | TienKungEnv | G1Env,
+    cmd_threshold: float = 0.2,
+    yaw_cmd_threshold: float = 0.2,
+    vel_threshold: float = 0.1,
+    yaw_vel_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize standing still under either translation or yaw commands."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    command = env.command_generator.command
+
+    cmd_xy_magnitude = torch.linalg.norm(command[:, :2], dim=-1)
+    cmd_yaw_magnitude = torch.abs(command[:, 2])
+    is_commanded = (cmd_xy_magnitude > cmd_threshold) | (cmd_yaw_magnitude > yaw_cmd_threshold)
+
+    is_standing_env = getattr(env.command_generator, "is_standing_env", None)
+    if is_standing_env is not None:
+        is_commanded &= ~is_standing_env
+
+    vel_yaw = math_utils.quat_apply_inverse(
+        math_utils.yaw_quat(asset.data.root_quat_w), asset.data.root_lin_vel_w[:, :3]
+    )
+    vel_magnitude = torch.linalg.norm(vel_yaw[:, :2], dim=-1)
+    yaw_vel_magnitude = torch.abs(asset.data.root_ang_vel_w[:, 2])
+    is_idle = (vel_magnitude < vel_threshold) & (yaw_vel_magnitude < yaw_vel_threshold)
+
+    return (is_commanded & is_idle).float()
+
+
+def target_goal_progress(
+    env: BaseEnv | TienKungEnv | G1Env,
+    min_progress_rate: float = -0.5,
+    max_progress_rate: float = 1.0,
+) -> torch.Tensor:
+    """Reward progress toward the active target point in meters per second."""
+    progress = getattr(env.command_generator, "goal_progress", None)
+    if progress is None:
+        return torch.zeros(env.num_envs, device=env.device)
+
+    progress_rate = progress / env.step_dt
+    progress_rate = torch.clamp(progress_rate, min=min_progress_rate, max=max_progress_rate)
+    is_standing_env = getattr(env.command_generator, "is_standing_env", None)
+    if is_standing_env is not None:
+        progress_rate = torch.where(is_standing_env, torch.zeros_like(progress_rate), progress_rate)
+    return progress_rate
+
+
+def target_goal_reached(env: BaseEnv | TienKungEnv | G1Env) -> torch.Tensor:
+    """One-step target reach bonus for target-point command tasks."""
+    reached = getattr(env.command_generator, "goal_reached_this_step", None)
+    if reached is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    return reached.float()
 

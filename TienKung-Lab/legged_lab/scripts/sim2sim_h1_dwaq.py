@@ -82,8 +82,8 @@ class H1DwaqSim2SimCfg:
         sim_duration = 100.0
         # Policy controls lower body only (10 DoF).
         num_actions = 10
-        # 3 + 3 + 3 + 10 + 10 + 10 + 4
-        num_obs_per_step = 40
+        # 3 + 3 + 3 + 10 + 10 + 10 + 4 = 43
+        num_obs_per_step = 43
         dwaq_obs_history_length = 5
         dt = 0.005
         decimation = 4
@@ -268,6 +268,14 @@ class H1DwaqMujocoRunner(g1_sim2sim.G1DwaqMujocoRunner):
             target_isaac_full[self.controlled_lab_ids] + self.action * self.cfg.sim.action_scale
         )
         return self.lab29_to_mj29(target_isaac_full)
+
+    def adjust_command_vel(self, idx: int, increment: float) -> None:
+        """Keep H1 DWAQ deployment commands inside the target-point training distribution."""
+        if idx == 0:
+            self.command_vel[0] = np.clip(self.command_vel[0] + increment, 0.0, 1.0)
+        elif idx == 2:
+            self.command_vel[2] = np.clip(self.command_vel[2] + increment, -1.57, 1.57)
+        self.command_vel[1] = 0.0
 
 
 def main():

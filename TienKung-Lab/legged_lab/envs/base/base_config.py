@@ -140,6 +140,25 @@ class TargetPointCommandCfg:
     terrain_margin: float = 1.0
     min_goal_distance: float = 1.0
     distance_to_max_speed: float = 2.0
+    min_reset_failure_age: float = 1.0
+    curriculum_window_size: int = 10
+    curriculum_min_attempts: int = 10
+    curriculum_move_up_successes: int = 7
+    curriculum_move_down_successes: int = 2
+    clear_history_on_terrain_change: bool = True
+    terrain_speed_schedule_enable: bool = False
+    terrain_speed_min_scale: float = 0.65
+    stair_vx_max: float = 0.55
+    stair_friendly_sampling_enable: bool = False
+    stair_target_distance_range: tuple = (1.0, 2.5)
+    stair_target_lateral_range: tuple = (-0.4, 0.4)
+    yaw_only_probability: float = 0.0
+    arc_turn_probability: float = 0.0
+    yaw_only_ang_vel_z: tuple = (-0.8, 0.8)
+    yaw_only_min_abs_ang_vel_z: float = 0.25
+    arc_turn_lin_vel_x: tuple = (0.1, 0.5)
+    arc_turn_ang_vel_z: tuple = (-0.8, 0.8)
+    arc_turn_min_abs_ang_vel_z: float = 0.2
 
 
 @configclass

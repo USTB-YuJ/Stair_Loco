@@ -414,6 +414,8 @@ class G1DwaqEnv(VecEnv):
         self.extras["log"] = dict()
         if self.cfg.scene.terrain_generator is not None:
             if self.cfg.scene.terrain_generator.curriculum:
+                if self.cfg.commands.target_point.enable and isinstance(self.command_generator, TargetPointVelocityCommand):
+                    self.command_generator.record_reset_failures(env_ids)
                 terrain_levels = self.update_terrain_levels(env_ids)
                 self.extras["log"].update(terrain_levels)
 
@@ -482,6 +484,8 @@ class G1DwaqEnv(VecEnv):
         3. At step end: compute new observations (updates buffers)
         4. Return: new obs + prev_critic_obs from step start
         """
+        self.extras["log"] = dict()
+
         # Store previous critic obs BEFORE stepping (for velocity estimation loss)
         # Use _get_current_critic_obs_with_height_scan to avoid double-appending to buffers
         self.prev_critic_obs = self._get_current_critic_obs_with_height_scan().clone()
@@ -804,7 +808,55 @@ class G1DwaqEnv(VecEnv):
         self.prev_critic_obs = torch.zeros(self.num_envs, full_privileged_obs_dim, device=self.device)
 
     def update_terrain_levels(self, env_ids):
-        """Update terrain curriculum levels based on robot progress."""
+        """Update terrain curriculum levels based on robot progress or target success rate."""
+        extras = {}
+        if self.cfg.commands.target_point.enable and isinstance(self.command_generator, TargetPointVelocityCommand):
+            target_env_ids = self.command_generator._env_ids_to_tensor(env_ids)
+            move_up, move_down = self.command_generator.get_terrain_curriculum_decisions(target_env_ids)
+            success_rate = self.command_generator.get_target_success_rate(target_env_ids)
+            attempt_count = self.command_generator.target_attempt_count[target_env_ids].float()
+            timeout_rate = self.command_generator.get_target_timeout_rate(target_env_ids)
+
+            old_levels = self.scene.terrain.terrain_levels[target_env_ids].clone()
+            self.scene.terrain.update_env_origins(target_env_ids, move_up, move_down)
+            level_changed = self.scene.terrain.terrain_levels[target_env_ids] != old_levels
+            if self.cfg.commands.target_point.clear_history_on_terrain_change and torch.any(level_changed):
+                self.command_generator.clear_curriculum_history(target_env_ids[level_changed])
+
+            extras["Curriculum/terrain_levels"] = torch.mean(self.scene.terrain.terrain_levels.float())
+            extras["Curriculum/target_success_rate"] = torch.mean(success_rate)
+            extras["Curriculum/target_attempt_count"] = torch.mean(attempt_count)
+            extras["Curriculum/target_move_up_rate"] = torch.mean(move_up.float())
+            extras["Curriculum/target_move_down_rate"] = torch.mean(move_down.float())
+            extras["Command/target_goal_distance"] = torch.mean(
+                self.command_generator.goal_distance[target_env_ids]
+            )
+            extras["Command/target_goal_progress"] = torch.mean(
+                self.command_generator.goal_progress[target_env_ids]
+            )
+            extras["Command/target_goal_reached_rate"] = torch.mean(
+                self.command_generator.goal_reached_this_step[target_env_ids].float()
+            )
+            extras["Command/target_goal_timeout_rate"] = torch.mean(
+                self.command_generator.goal_timed_out_this_step[target_env_ids].float()
+            )
+            if hasattr(self.command_generator, "get_terrain_category_masks"):
+                terrain_masks = self.command_generator.get_terrain_category_masks(target_env_ids)
+                for terrain_name, terrain_mask in terrain_masks.items():
+                    prefix = f"Curriculum/{terrain_name}_target"
+                    if torch.any(terrain_mask):
+                        extras[f"{prefix}_success_rate"] = torch.mean(success_rate[terrain_mask])
+                        extras[f"{prefix}_attempt_count"] = torch.mean(attempt_count[terrain_mask])
+                        extras[f"{prefix}_reached_rate"] = torch.mean(success_rate[terrain_mask])
+                        extras[f"{prefix}_timeout_rate"] = torch.mean(timeout_rate[terrain_mask])
+                    else:
+                        zero = torch.zeros((), device=self.device)
+                        extras[f"{prefix}_success_rate"] = zero
+                        extras[f"{prefix}_attempt_count"] = zero
+                        extras[f"{prefix}_reached_rate"] = zero
+                        extras[f"{prefix}_timeout_rate"] = zero
+            return extras
+
         distance = torch.norm(self.robot.data.root_pos_w[env_ids, :2] - self.scene.env_origins[env_ids, :2], dim=1)
         move_up = distance > self.scene.terrain.cfg.terrain_generator.size[0] / 2
         move_down = (
@@ -812,7 +864,6 @@ class G1DwaqEnv(VecEnv):
         )
         move_down *= ~move_up
         self.scene.terrain.update_env_origins(env_ids, move_up, move_down)
-        extras = {}
         extras["Curriculum/terrain_levels"] = torch.mean(self.scene.terrain.terrain_levels.float())
         return extras
 
