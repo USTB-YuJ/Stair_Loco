@@ -53,6 +53,16 @@ class Controller:
         self.config = config
         self.remote_controller = RemoteController()
 
+        expected_obs_dim = 9 + config.num_actions * 3 + (4 if config.gait_phase_enable else 0)
+        if config.num_obs != expected_obs_dim:
+            raise ValueError(
+                f"num_obs mismatch: config has {config.num_obs}, but deploy.py will compose "
+                f"{expected_obs_dim} dims from ang_vel(3)+gravity(3)+command(3)"
+                f"+joint_pos({config.num_actions})+joint_vel({config.num_actions})"
+                f"+action({config.num_actions})"
+                f"+gait_phase({4 if config.gait_phase_enable else 0})."
+            )
+
         self.policy = torch.jit.load(config.policy_path).eval()
         self.run_thread = RecurrentThread(interval=self.config.control_dt, target=self.run)  # 100Hz/50Hz
         self.publish_thread = RecurrentThread(interval=1 / 500, target=self.publish)

@@ -41,9 +41,9 @@ action_scale: 0.25
 command_scale: [1.0, 1.0, 1.0]
 
 # H1 lower-body DWAQ with gait phase:
-# ang_vel(3) + gravity(3) + command(3) + joint_pos(10) + joint_vel(10) + action(10) + gait_phase(4) = 40
+# ang_vel(3) + gravity(3) + command(3) + joint_pos(10) + joint_vel(10) + action(10) + gait_phase(4) = 43
 num_actions: 10
-num_obs: 40
+num_obs: 43
 
 gait_phase:
   enable: true

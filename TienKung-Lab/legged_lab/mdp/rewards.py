@@ -240,6 +240,86 @@ def feet_stumble(env: BaseEnv | TienKungEnv, sensor_cfg: SceneEntityCfg) -> torc
     )
 
 
+def post_stumble_lift(
+    env: BaseEnv | TienKungEnv,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    stance_threshold: float = 0.55,
+    lift_window_s: float = 0.25,
+    min_lift: float = 0.015,
+    max_lift: float = 0.12,
+    contact_threshold: float = 1.0,
+    horizontal_force_threshold: float = 15.0,
+    horizontal_to_vertical_ratio: float = 2.0,
+    max_stumble_force: float = 350.0,
+    command_threshold: float = 0.1,
+) -> torch.Tensor:
+    """Reward quick swing-foot lifting immediately after a light stumble.
+
+    A stumble is treated as an unexpected swing-foot contact with a dominant
+    horizontal force. Once triggered, the foot gets a short recovery window and
+    is rewarded only for lifting above its height at the trigger step.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    net_contact_forces = contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids, :]
+    feet_pos_z = asset.data.body_pos_w[:, asset_cfg.body_ids, 2]
+    num_feet = feet_pos_z.shape[1]
+
+    force_norm = torch.norm(net_contact_forces, dim=-1)
+    horizontal_force = torch.norm(net_contact_forces[..., :2], dim=-1)
+    vertical_force = torch.abs(net_contact_forces[..., 2])
+    contact = force_norm > float(contact_threshold)
+
+    if hasattr(env, "leg_phase") and env.leg_phase.shape[-1] == num_feet:
+        swing_mask = env.leg_phase[:, :num_feet] >= float(stance_threshold)
+    else:
+        current_contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
+        swing_mask = current_contact_time <= env.step_dt * 1.5
+
+    stumble_mask = contact & swing_mask
+    stumble_mask &= horizontal_force > float(horizontal_force_threshold)
+    stumble_mask &= horizontal_force > float(horizontal_to_vertical_ratio) * vertical_force
+    if max_stumble_force > 0.0:
+        stumble_mask &= force_norm < float(max_stumble_force)
+
+    command_magnitude = torch.norm(env.command_generator.command[:, :2], dim=1) + torch.abs(
+        env.command_generator.command[:, 2]
+    )
+    stumble_mask &= command_magnitude.unsqueeze(-1) > float(command_threshold)
+
+    timer_name = "_post_stumble_lift_timer"
+    ref_name = "_post_stumble_lift_ref_z"
+    state_shape = (env.num_envs, num_feet)
+    timer = getattr(env, timer_name, None)
+    ref_z = getattr(env, ref_name, None)
+    if timer is None or ref_z is None or timer.shape != state_shape or ref_z.shape != state_shape:
+        timer = torch.zeros(state_shape, device=env.device)
+        ref_z = feet_pos_z.clone()
+        setattr(env, timer_name, timer)
+        setattr(env, ref_name, ref_z)
+
+    early_episode = env.episode_length_buf <= 1
+    if torch.any(early_episode):
+        timer[early_episode] = 0.0
+        ref_z[early_episode] = feet_pos_z[early_episode]
+
+    window_steps = max(int(round(float(lift_window_s) / env.step_dt)), 1)
+    new_stumble = stumble_mask & (timer <= 0.0)
+    timer[:] = torch.where(new_stumble, torch.full_like(timer, float(window_steps)), timer)
+    ref_z[:] = torch.where(new_stumble, feet_pos_z, ref_z)
+
+    active = timer > 0.0
+    lift = torch.clamp(feet_pos_z - ref_z - float(min_lift), min=0.0)
+    lift_progress = torch.clamp(lift / max(float(max_lift - min_lift), 1.0e-6), max=1.0)
+    time_weight = timer / float(window_steps)
+    reward = lift_progress * time_weight * active.float() * swing_mask.float()
+
+    timer[:] = torch.clamp(timer - 1.0, min=0.0)
+    return torch.sum(reward, dim=-1)
+
+
 def feet_too_near_humanoid(
     env: BaseEnv | TienKungEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"), threshold: float = 0.2
 ) -> torch.Tensor:

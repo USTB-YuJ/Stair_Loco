@@ -113,6 +113,21 @@ class H1DwaqRewardCfg(H1RewardCfg):
             "stance_threshold": 0.55,
         },
     )
+    post_stumble_lift = RewTerm(
+        func=mdp.post_stumble_lift,
+        weight=0.5,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_sensor", body_names=["left_ankle.*", "right_ankle.*"]),
+            "asset_cfg": SceneEntityCfg("robot", body_names=["left_ankle.*", "right_ankle.*"]),
+            "stance_threshold": 0.55,
+            "lift_window_s": 0.25,
+            "min_lift": 0.015,
+            "max_lift": 0.12,
+            "horizontal_force_threshold": 15.0,
+            "horizontal_to_vertical_ratio": 2.0,
+            "max_stumble_force": 350.0,
+        },
+    )
 
 
 @configclass

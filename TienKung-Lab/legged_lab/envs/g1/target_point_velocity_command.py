@@ -58,11 +58,13 @@ class TargetPointVelocityCommand(UniformVelocityCommand):
         self.metrics["target_mode_rate"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["yaw_only_mode_rate"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["arc_turn_mode_rate"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["flat_turn_eligible_rate"] = torch.zeros(self.num_envs, device=self.device)
 
         self._terrain_col_names = self._build_terrain_col_names()
         self._terrain_col_is_stairs = self._terrain_col_mask("stairs")
         self._terrain_col_is_stairs_up = self._terrain_col_mask("stairs_up")
         self._terrain_col_is_stairs_down = self._terrain_col_mask("stairs_down")
+        self._terrain_col_is_flat = self._terrain_col_mask("flat")
 
     def __str__(self) -> str:
         msg = "TargetPointVelocityCommand:\n"
@@ -139,14 +141,41 @@ class TargetPointVelocityCommand(UniformVelocityCommand):
             self._terrain_col_is_stairs_down[col_ids],
         )
 
+    def _flat_turn_mask(self, env_ids: Sequence[int] | slice) -> torch.Tensor:
+        env_ids = self._env_ids_to_tensor(env_ids)
+        if env_ids.numel() == 0:
+            return torch.zeros(0, dtype=torch.bool, device=self.device)
+
+        col_ids = self._terrain_col_ids(env_ids)
+        has_flat_columns = self._terrain_col_is_flat.numel() > 0 and bool(
+            torch.any(self._terrain_col_is_flat).item()
+        )
+        if col_ids is not None and has_flat_columns:
+            return self._terrain_col_is_flat[col_ids]
+
+        stairs, _, _ = self._stair_masks(env_ids)
+        terrain = getattr(self._env.scene, "terrain", None)
+        terrain_levels = getattr(terrain, "terrain_levels", None)
+        if terrain_levels is None:
+            return ~stairs
+        return (~stairs) & (terrain_levels[env_ids].to(dtype=torch.long) <= 0)
+
+    def _flat_turn_env_ids(self, env_ids: Sequence[int] | slice) -> torch.Tensor:
+        env_ids = self._env_ids_to_tensor(env_ids)
+        if env_ids.numel() == 0:
+            return env_ids
+        return env_ids[self._flat_turn_mask(env_ids)]
+
     def get_terrain_category_masks(self, env_ids: Sequence[int] | slice) -> dict[str, torch.Tensor]:
         env_ids = self._env_ids_to_tensor(env_ids)
         stairs, stairs_up, stairs_down = self._stair_masks(env_ids)
+        flat_turn = self._flat_turn_mask(env_ids)
         return {
             "stairs": stairs,
             "stairs_up": stairs_up,
             "stairs_down": stairs_down,
             "non_stairs": ~stairs,
+            "flat_turn": flat_turn,
         }
 
     def get_target_timeout_rate(self, env_ids: Sequence[int] | slice) -> torch.Tensor:
@@ -186,7 +215,9 @@ class TargetPointVelocityCommand(UniformVelocityCommand):
 
         active_env_ids = env_ids[~self.is_standing_env[env_ids]]
         if active_env_ids.numel() > 0:
-            self._sample_command_modes(active_env_ids)
+            turn_env_ids = self._flat_turn_env_ids(active_env_ids)
+            if turn_env_ids.numel() > 0:
+                self._sample_command_modes(turn_env_ids)
 
         target_env_ids = env_ids[self.command_mode[env_ids] == self.MODE_TARGET]
         if target_env_ids.numel() > 0:
@@ -405,6 +436,9 @@ class TargetPointVelocityCommand(UniformVelocityCommand):
         )
         self.metrics["arc_turn_mode_rate"] += (
             (active_mask & (self.command_mode == self.MODE_ARC_TURN)).float() / max_command_step
+        )
+        self.metrics["flat_turn_eligible_rate"] += (
+            (active_mask & self._flat_turn_mask(slice(None))).float() / max_command_step
         )
         self.metrics["error_vel_xy"] += (
             torch.norm(self.vel_command_b[:, :2] - self.robot.data.root_lin_vel_b[:, :2], dim=-1) / max_command_step

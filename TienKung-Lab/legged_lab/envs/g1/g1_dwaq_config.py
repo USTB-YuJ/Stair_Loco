@@ -110,6 +110,23 @@ class G1DwaqRewardCfg(RewardCfg):
         weight=-2.0,
         params={"sensor_cfg": SceneEntityCfg("contact_sensor", body_names=[".*ankle_roll.*"])},
     )
+    post_stumble_lift = RewTerm(
+        func=mdp.post_stumble_lift,
+        weight=0.5,
+        params={
+            "sensor_cfg": SceneEntityCfg(
+                "contact_sensor", body_names=["left_ankle_roll.*", "right_ankle_roll.*"]
+            ),
+            "asset_cfg": SceneEntityCfg("robot", body_names=["left_ankle_roll.*", "right_ankle_roll.*"]),
+            "stance_threshold": 0.55,
+            "lift_window_s": 0.25,
+            "min_lift": 0.015,
+            "max_lift": 0.12,
+            "horizontal_force_threshold": 15.0,
+            "horizontal_to_vertical_ratio": 2.0,
+            "max_stumble_force": 350.0,
+        },
+    )
     dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=-2.0)
     joint_deviation_hip = RewTerm(
         func=mdp.joint_deviation_l1_always,

@@ -29,11 +29,11 @@
 1. **不能直接使用 `configs/h1.yaml`**
    - `h1.yaml` 对应的是普通 H1 策略，不是 DWAQ
    - 它的 `history_length=10`、`num_obs=66`
-   - 而当前 H1 下肢专训 DWAQ 需要的是 `history_length=5`、`num_obs=40`
+   - 而当前 H1 下肢专训 DWAQ 需要的是 `history_length=5`、`num_obs=43`
 
 2. **需要使用 DWAQ 专用导出脚本**
    - `export_dwaq_policy.py` 会把 `Encoder + Actor` 合成一个单输入 TorchScript
-   - 部署时输入是 `5 * 40 = 200` 维的扁平化观测历史
+   - 部署时输入是 `5 * 43 = 215` 维的扁平化观测历史
 
 3. **步态相位顺序必须与训练侧一致**
    - 训练侧真实顺序是：
@@ -57,7 +57,7 @@
   - `offset = 0.5`
 - 固定关节：腰部和上肢保持默认位姿
 
-### 40 维观测组成
+### 43 维观测组成
 
 ```text
 ang_vel (3)
@@ -67,7 +67,7 @@ ang_vel (3)
 + joint_vel (10)
 + previous_action (10)
 + gait_phase (4)
-= 40
+= 43
 ```
 
 ### gait phase 观测顺序
@@ -136,7 +136,7 @@ conda activate geo
 ```bash
 python legged_lab/scripts/export_dwaq_policy.py \
     --checkpoint logs/h1_dwaq/<run_name>/model_<iter>.pt \
-   --num_obs 40 \
+   --num_obs 43 \
    --num_actions 10 \
     --history_length 5
 ```
@@ -146,7 +146,7 @@ python legged_lab/scripts/export_dwaq_policy.py \
 ```bash
 python legged_lab/scripts/export_dwaq_policy.py \
     --checkpoint logs/h1_dwaq/2026-xx-xx_xx-xx-xx/model_10000.pt \
-   --num_obs 40 \
+   --num_obs 43 \
    --num_actions 10 \
     --history_length 5
 ```
@@ -203,7 +203,7 @@ configs/h1_dwaq_phase.yaml
 | 策略类型 | 普通 H1 策略 | H1 带步态 DWAQ |
 | `policy_path` | `policy/h1/policy.pt` | `policy/h1_dwaq_phase/policy.pt` |
 | `history_length` | 10 | 5 |
-| `num_obs` | 66 | 40 |
+| `num_obs` | 66 | 43 |
 | `num_actions` | 19 | 10 |
 | `gait_phase.enable` | 无 | `true` |
 
@@ -271,7 +271,7 @@ python deploy.py --config_path configs/h1_dwaq_phase.yaml --net eno1
 cd /TienKung-Lab
 python legged_lab/scripts/export_dwaq_policy.py \
     --checkpoint logs/h1_dwaq/<run_name>/model_<iter>.pt \
-   --num_obs 40 \
+   --num_obs 43 \
    --num_actions 10 \
     --history_length 5
 

@@ -78,7 +78,10 @@
                   diaginertia="0.00362 0.00355701 0.000149987"/>
                 <joint name="left_ankle_joint" axis="0 1 0" range="-0.87 0.52"/>
                 <geom class="visual" mesh="left_ankle_link"/>
-                <geom class="collision" mesh="left_ankle_link"/>
+                <geom class="collision" type="sphere" size="0.015" pos="-0.075 0.012 -0.055"/>
+                <geom class="collision" type="sphere" size="0.015" pos="-0.075 -0.012 -0.055"/>
+                <geom class="collision" type="sphere" size="0.015" pos="0.165 0.012 -0.055"/>
+                <geom class="collision" type="sphere" size="0.015" pos="0.165 -0.012 -0.055"/>
               </body>
             </body>
           </body>
@@ -113,7 +116,10 @@
                   diaginertia="0.00362 0.00355701 0.000149987"/>
                 <joint name="right_ankle_joint" axis="0 1 0" range="-0.87 0.52"/>
                 <geom class="visual" mesh="right_ankle_link"/>
-                <geom class="collision" mesh="right_ankle_link"/>
+                <geom class="collision" type="sphere" size="0.015" pos="-0.075 0.012 -0.055"/>
+                <geom class="collision" type="sphere" size="0.015" pos="-0.075 -0.012 -0.055"/>
+                <geom class="collision" type="sphere" size="0.015" pos="0.165 0.012 -0.055"/>
+                <geom class="collision" type="sphere" size="0.015" pos="0.165 -0.012 -0.055"/>
               </body>
             </body>
           </body>
