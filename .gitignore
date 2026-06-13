@@ -127,7 +127,6 @@ wandb/
 MUJOCO_LOG.TXT
 .history/
 IsaacLab/
-*.mp4
 *.avi
 *.mov
 
