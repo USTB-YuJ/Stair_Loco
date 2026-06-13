@@ -414,6 +414,89 @@ def feet_swing_height(
     return torch.sum(pos_error, dim=-1)
 
 
+
+def _terrain_aware_clearance_score(
+    foot_clearance: torch.Tensor,
+    obstacle_height: torch.Tensor,
+    swing_mask: torch.Tensor,
+    base_clearance: float = 0.08,
+    obstacle_margin: float = 0.04,
+    max_clearance: float = 0.30,
+    obstacle_threshold: float = 0.02,
+    under_clearance_std: float = 0.04,
+    overshoot_margin: float = 0.08,
+    overshoot_std: float = 0.08,
+) -> torch.Tensor:
+    """Score swing-foot clearance only when a local obstacle is present."""
+    obstacle_height = obstacle_height.clamp(min=0.0)
+    obstacle_bonus = torch.where(
+        obstacle_height > obstacle_threshold,
+        torch.full_like(obstacle_height, obstacle_margin),
+        torch.zeros_like(obstacle_height),
+    )
+    required_clearance = (base_clearance + obstacle_height + obstacle_bonus).clamp(max=max_clearance)
+
+    under_clearance = (required_clearance - foot_clearance).clamp(min=0.0)
+    overshoot = (foot_clearance - (required_clearance + overshoot_margin)).clamp(min=0.0)
+    score = torch.exp(-torch.square(under_clearance / under_clearance_std))
+    score = score * torch.exp(-torch.square(overshoot / overshoot_std))
+
+    active = swing_mask & (obstacle_height > obstacle_threshold)
+    return score * active.float()
+
+
+def terrain_aware_feet_clearance(
+    env: BaseEnv,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    base_clearance: float = 0.08,
+    obstacle_margin: float = 0.04,
+    max_clearance: float = 0.30,
+    obstacle_threshold: float = 0.02,
+    under_clearance_std: float = 0.04,
+    overshoot_margin: float = 0.08,
+    overshoot_std: float = 0.08,
+) -> torch.Tensor:
+    """Reward swing feet for clearing local terrain-relative obstacles.
+
+    The actor remains blind. This reward only uses training-time buffers produced
+    by the height scanner: env.forward_obstacle_height and env.terrain_height_at_feet.
+    """
+    if not hasattr(env, "forward_obstacle_height") or not hasattr(env, "terrain_height_at_feet"):
+        return torch.zeros(env.num_envs, device=env.device)
+
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    net_contact_forces = contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids, :]
+    contact = torch.norm(net_contact_forces, dim=-1) > 1.0
+    feet_pos_z = asset.data.body_pos_w[:, asset_cfg.body_ids, 2]
+
+    num_feet = min(
+        feet_pos_z.shape[1],
+        contact.shape[1],
+        env.forward_obstacle_height.shape[1],
+        env.terrain_height_at_feet.shape[1],
+    )
+    foot_clearance = feet_pos_z[:, :num_feet] - env.terrain_height_at_feet[:, :num_feet]
+    obstacle_height = env.forward_obstacle_height[:, :num_feet]
+    swing_mask = ~contact[:, :num_feet]
+
+    score = _terrain_aware_clearance_score(
+        foot_clearance,
+        obstacle_height,
+        swing_mask,
+        base_clearance=base_clearance,
+        obstacle_margin=obstacle_margin,
+        max_clearance=max_clearance,
+        obstacle_threshold=obstacle_threshold,
+        under_clearance_std=under_clearance_std,
+        overshoot_margin=overshoot_margin,
+        overshoot_std=overshoot_std,
+    )
+    return torch.sum(score, dim=-1)
+
+
 def base_height(
     env: BaseEnv,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),

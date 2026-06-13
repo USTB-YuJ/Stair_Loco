@@ -41,7 +41,7 @@ from legged_lab.envs.base.base_env_config import (
     RewardCfg,
 )
 import legged_lab.mdp as mdp
-from legged_lab.terrains import ROUGH_TERRAINS_CFG, DWAQ_HARD_TERRAINS_CFG
+from legged_lab.terrains import DWAQ_TERRAINS_CFG
 
 
 @configclass
@@ -234,10 +234,9 @@ class G1DwaqEnvCfg(BaseEnvCfg):
         self.scene.height_scanner.prim_body_name = "torso_link"
         self.scene.robot = G1_CFG
         self.scene.terrain_type = "generator"
-        # 高难度地形: 20cm 窄台阶 (Resume 训练用)
-        # 如需切换回普通难度，改为 ROUGH_TERRAINS_CFG
-        # self.scene.terrain_generator = ROUGH_TERRAINS_CFG
-        self.scene.terrain_generator = ROUGH_TERRAINS_CFG
+        # Resume on the regular DWAQ terrain set and restart curriculum from the easiest row.
+        self.scene.terrain_generator = DWAQ_TERRAINS_CFG
+        self.scene.max_init_terrain_level = 0
         self.robot.terminate_contacts_body_names = [".*torso.*"]
         # 明确指定脚的顺序: [左脚, 右脚]，与 leg_phase 顺序一致
         # 这对于 gait_phase_contact 奖励函数正确匹配相位至关重要
@@ -338,7 +337,10 @@ class G1DwaqAgentCfg(BaseAgentCfg):
         
         # Use ActorCritic_DWAQ policy with VAE encoder
         self.policy.class_name = "ActorCritic_DWAQ"
-        self.policy.init_noise_std = 1.0  # 增强早期探索（原版 DreamWaQ 默认值）
+        self.policy.init_noise_std = 0.6  # Moderate exploration for DWAQ stair resume.
+        self.policy.resume_noise_std = 0.6  # Checkpoint std overrides init_noise_std; reset it after load.
+        self.policy.std_min = 0.05
+        self.policy.std_max = 0.6
         self.policy.actor_hidden_dims = [512, 256, 128]
         self.policy.critic_hidden_dims = [512, 256, 128]
         
@@ -349,4 +351,4 @@ class G1DwaqAgentCfg(BaseAgentCfg):
         # Use DWAQPPO algorithm (PPO + autoencoder loss)
         self.algorithm.class_name = "DWAQPPO"
         # Match original DreamWaQ entropy coefficient (default is 0.005)
-        self.algorithm.entropy_coef = 0.01
+        self.algorithm.entropy_coef = 0.003

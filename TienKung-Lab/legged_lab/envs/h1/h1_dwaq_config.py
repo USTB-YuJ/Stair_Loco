@@ -22,7 +22,7 @@ class H1DwaqRewardCfg(H1RewardCfg):
     upright_posture_reward = RewTerm(
         func=mdp.body_orientation_exp,
         params={"asset_cfg": SceneEntityCfg("robot", body_names=".*torso.*"), "std": 0.3},
-        weight=1.0,
+        weight=2.0,
     )
     alive = RewTerm(func=mdp.alive, weight=0.15)
     idle_penalty = RewTerm(
@@ -45,6 +45,21 @@ class H1DwaqRewardCfg(H1RewardCfg):
             "sensor_cfg": SceneEntityCfg("contact_sensor", body_names=".*ankle.*"),
             "asset_cfg": SceneEntityCfg("robot", body_names=".*ankle.*"),
             "target_height": 0.08,
+        },
+    )
+    terrain_aware_feet_clearance = RewTerm(
+        func=mdp.terrain_aware_feet_clearance,
+        weight=3.0,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_sensor", body_names=".*ankle.*"),
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*ankle.*"),
+            "base_clearance": 0.08,
+            "obstacle_margin": 0.04,
+            "max_clearance": 0.30,
+            "obstacle_threshold": 0.02,
+            "under_clearance_std": 0.04,
+            "overshoot_margin": 0.08,
+            "overshoot_std": 0.08,
         },
     )
 

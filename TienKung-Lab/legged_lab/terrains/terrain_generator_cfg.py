@@ -75,7 +75,7 @@ ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
         ),
         # ========== 下台阶 (中心低，向外上升) - 20% ==========
         "stairs_down_30": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
-            proportion=0.1,
+            proportion=0.2,
             step_height_range=(0.0, 0.23),
             step_width=0.30,
             platform_width=3.0,
@@ -83,7 +83,7 @@ ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
             holes=False,
         ),
         "stairs_down_34": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
-            proportion=0.1,
+            proportion=0.2,
             step_height_range=(0.0, 0.23),
             step_width=0.34,
             platform_width=3.0,
@@ -92,10 +92,10 @@ ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
         ),
         # ========== 其他地形 - 60% ==========
         "boxes": terrain_gen.MeshRandomGridTerrainCfg(
-            proportion=0.1, grid_width=0.45, grid_height_range=(0.0, 0.15), platform_width=2.0
+            proportion=0., grid_width=0.45, grid_height_range=(0.0, 0.15), platform_width=2.0
         ),
         "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
-            proportion=0.15, noise_range=(-0.02, 0.04), noise_step=0.02, border_width=0.25
+            proportion=0.2, noise_range=(-0.02, 0.04), noise_step=0.02, border_width=0.25
         ),
         "wave": terrain_gen.HfWaveTerrainCfg(
             proportion=0.1, amplitude_range=(0.0, 0.2), num_waves=5.0
@@ -104,7 +104,7 @@ ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
             proportion=0.1, slope_range=(0.0, 0.3), platform_width=2.0, inverted=False
         ),
         "high_platform": terrain_gen.MeshPitTerrainCfg(
-            proportion=0.15, pit_depth_range=(0.0, 0.3), platform_width=2.0, double_pit=True
+            proportion=0., pit_depth_range=(0.0, 0.3), platform_width=2.0, double_pit=True
         ),
         # "gap": terrain_gen.MeshGapTerrainCfg(
         #     proportion=0.1, gap_width_range=(0.1, 0.4), platform_width=2.0
@@ -304,7 +304,7 @@ DWAQ_HARD_TERRAINS_CFG = TerrainGeneratorCfg(
     sub_terrains={
         # ========== 上台阶 - 35% (窄台阶 20cm) ==========
         "stairs_up_20": terrain_gen.MeshPyramidStairsTerrainCfg(
-            proportion=0.12,
+            proportion=0.,
             step_height_range=(0.0, 0.25),  # 最高 25cm
             step_width=0.20,  # 20cm 窄台阶
             platform_width=3.0,
@@ -312,7 +312,7 @@ DWAQ_HARD_TERRAINS_CFG = TerrainGeneratorCfg(
             holes=False,
         ),
         "stairs_up_24": terrain_gen.MeshPyramidStairsTerrainCfg(
-            proportion=0.12,
+            proportion=0.,
             step_height_range=(0.0, 0.25),
             step_width=0.24,  # 24cm
             platform_width=3.0,
@@ -320,16 +320,32 @@ DWAQ_HARD_TERRAINS_CFG = TerrainGeneratorCfg(
             holes=False,
         ),
         "stairs_up_28": terrain_gen.MeshPyramidStairsTerrainCfg(
-            proportion=0.11,
-            step_height_range=(0.0, 0.23),
+            proportion=0.1,
+            step_height_range=(0.0, 0.30),
             step_width=0.28,
+            platform_width=3.0,
+            border_width=1.0,
+            holes=False,
+        ),
+        "stairs_up_30": terrain_gen.MeshPyramidStairsTerrainCfg(
+            proportion=0.1,
+            step_height_range=(0.0, 0.30),
+            step_width=0.30,
+            platform_width=3.0,
+            border_width=1.0,
+            holes=False,
+        ),
+        "stairs_up_32": terrain_gen.MeshPyramidStairsTerrainCfg(
+            proportion=0.1,
+            step_height_range=(0.0, 0.30),
+            step_width=0.32,
             platform_width=3.0,
             border_width=1.0,
             holes=False,
         ),
         # ========== 下台阶 - 35% (窄台阶 20cm) ==========
         "stairs_down_20": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
-            proportion=0.12,
+            proportion=0.,
             step_height_range=(0.0, 0.25),
             step_width=0.20,  # 20cm 窄台阶
             platform_width=3.0,
@@ -337,7 +353,7 @@ DWAQ_HARD_TERRAINS_CFG = TerrainGeneratorCfg(
             holes=False,
         ),
         "stairs_down_24": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
-            proportion=0.12,
+            proportion=0.,
             step_height_range=(0.0, 0.25),
             step_width=0.24,
             platform_width=3.0,
@@ -345,22 +361,38 @@ DWAQ_HARD_TERRAINS_CFG = TerrainGeneratorCfg(
             holes=False,
         ),
         "stairs_down_28": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
-            proportion=0.11,
-            step_height_range=(0.0, 0.23),
+            proportion=0.1,
+            step_height_range=(0.0, 0.30),
             step_width=0.28,
+            platform_width=3.0,
+            border_width=1.0,
+            holes=False,
+        ),
+        "stairs_down_30": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
+            proportion=0.1,
+            step_height_range=(0.0, 0.30),
+            step_width=0.30,
+            platform_width=3.0,
+            border_width=1.0,
+            holes=False,
+        ),
+        "stairs_down_32": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
+            proportion=0.1,
+            step_height_range=(0.0, 0.30),
+            step_width=0.32,
             platform_width=3.0,
             border_width=1.0,
             holes=False,
         ),
         # ========== 其他高难度地形 - 30% ==========
         "boxes": terrain_gen.MeshRandomGridTerrainCfg(
-            proportion=0.1, grid_width=0.30, grid_height_range=(0.0, 0.18), platform_width=2.0
+            proportion=0., grid_width=0.30, grid_height_range=(0.0, 0.18), platform_width=2.0
         ),
         "rough": terrain_gen.HfRandomUniformTerrainCfg(
-            proportion=0.1, noise_range=(-0.03, 0.06), noise_step=0.02, border_width=0.25
+            proportion=0.2, noise_range=(-0.03, 0.06), noise_step=0.02, border_width=0.25
         ),
         "slope": terrain_gen.HfPyramidSlopedTerrainCfg(
-            proportion=0.1, slope_range=(0.0, 0.35), platform_width=2.0, inverted=False
+            proportion=0.2, slope_range=(0.0, 0.35), platform_width=2.0, inverted=False
         ),
     },
 )

@@ -1,7 +1,11 @@
 python legged_lab/scripts/train.py \
     --task=h1_dwaq \
-    --gpu="0" \
+    --gpu=0 \
     --logger=tensorboard \
     --num_envs=4096 \
     --max_iterations=80000 \
     --headless \
+    --resume=True \
+    --load_run=2026-06-10_23-38-11 \
+    --checkpoint=model_13000.pt \
+    --run_name=resume_dwaq_low_level

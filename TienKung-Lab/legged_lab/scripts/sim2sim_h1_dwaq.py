@@ -92,6 +92,8 @@ class H1DwaqMujocoRunner(g1_sim2sim.G1DwaqMujocoRunner):
     def init_variables(self) -> None:
         self.dt = self.cfg.sim.decimation * self.cfg.sim.dt
         self.num_actions = self.cfg.sim.num_actions
+        self.mujoco_dof_names = MUJOCO_DOF_NAMES
+        self.lab_dof_names = LAB_DOF_NAMES
 
         self.dof_pos = np.zeros(self.num_actions)
         self.dof_vel = np.zeros(self.num_actions)
@@ -270,6 +272,16 @@ def main():
     )
     parser.add_argument("--scene-file", type=str, default=None, help="explicit scene file path")
     parser.add_argument("--duration", type=float, default=100.0, help="simulation duration in seconds")
+    parser.add_argument("--record-video", action="store_true", help="record MuJoCo MP4; press q to stop and save")
+    parser.add_argument("--video-path", type=str, default=None, help="MP4 output path; default saves beside checkpoint")
+    parser.add_argument("--video-fps", type=float, default=50.0, help="recording FPS")
+    parser.add_argument("--video-width", type=int, default=640, help="recording width")
+    parser.add_argument("--video-height", type=int, default=480, help="recording height")
+    parser.add_argument("--video-camera", type=str, default=None, help="MuJoCo camera name; default follows from side-rear, pass free to disable")
+    parser.add_argument("--video-follow-distance", type=float, default=3.0, help="follow camera distance")
+    parser.add_argument("--video-follow-height", type=float, default=0.75, help="follow camera look-at height above root")
+    parser.add_argument("--video-follow-yaw-offset", type=float, default=-45.0, help="side-rear yaw offset relative to robot heading; default is behind the robot")
+    parser.add_argument("--video-follow-elevation", type=float, default=-28.0, help="follow camera elevation angle; default is more top-down")
     parser.add_argument("--list-scenes", action="store_true", help="list available scenes and exit")
     args = parser.parse_args()
 
@@ -321,6 +333,16 @@ def main():
         cfg=cfg,
         checkpoint_path=args.checkpoint,
         model_path=model_path,
+        record_video=args.record_video,
+        video_path=args.video_path,
+        video_fps=args.video_fps,
+        video_width=args.video_width,
+        video_height=args.video_height,
+        video_camera=args.video_camera,
+        video_follow_distance=args.video_follow_distance,
+        video_follow_height=args.video_follow_height,
+        video_follow_yaw_offset=args.video_follow_yaw_offset,
+        video_follow_elevation=args.video_follow_elevation,
     )
     runner.run()
 

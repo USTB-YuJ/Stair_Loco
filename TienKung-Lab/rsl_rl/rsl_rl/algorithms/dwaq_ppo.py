@@ -364,6 +364,8 @@ class DWAQPPO:
             loss.backward()
             nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
             self.optimizer.step()
+            if hasattr(self.policy, "clamp_std"):
+                self.policy.clamp_std()
 
             # Accumulate losses
             mean_value_loss += value_loss.item()

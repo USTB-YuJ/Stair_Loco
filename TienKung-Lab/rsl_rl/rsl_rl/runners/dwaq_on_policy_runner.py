@@ -90,7 +90,7 @@ class DWAQOnPolicyRunner:
         policy_class = eval(policy_class_name)
 
         # Filter policy config to only include ActorCritic_DWAQ supported params
-        dwaq_supported_params = ["activation", "init_noise_std"]
+        dwaq_supported_params = ["activation", "init_noise_std", "std_min", "std_max"]
         filtered_policy_cfg = {k: v for k, v in self.policy_cfg.items() if k in dwaq_supported_params}
 
         # Create actor-critic with DWAQ architecture
@@ -420,6 +420,16 @@ class DWAQOnPolicyRunner:
 
         if load_optimizer:
             self.alg.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
+
+        resume_noise_std = self.policy_cfg.get("resume_noise_std")
+        if resume_noise_std is not None and hasattr(self.alg.policy, "std"):
+            with torch.no_grad():
+                self.alg.policy.std.fill_(float(resume_noise_std))
+            if hasattr(self.alg.policy, "clamp_std"):
+                self.alg.policy.clamp_std()
+            # Drop stale Adam momentum for std so the next update does not immediately undo the reset.
+            self.alg.optimizer.state.pop(self.alg.policy.std, None)
+            print(f"[INFO] Reset policy std to {float(resume_noise_std):.3f} after loading checkpoint")
 
         # Load normalizer state if available
         if self.empirical_normalization and "obs_norm_state_dict" in loaded_dict:

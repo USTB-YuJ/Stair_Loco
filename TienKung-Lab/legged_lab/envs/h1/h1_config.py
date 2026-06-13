@@ -48,7 +48,7 @@ class H1RewardCfg(RewardCfg):
         weight=-1.0,
         params={"sensor_cfg": SceneEntityCfg("contact_sensor", body_names=".*ankle.*"), "threshold": 1.0},
     )
-    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)
+    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-2.0)
     termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_positive_biped,
@@ -79,7 +79,7 @@ class H1RewardCfg(RewardCfg):
     )
     feet_stumble = RewTerm(
         func=mdp.feet_stumble,
-        weight=-2.0,
+        weight=-1.5,
         params={"sensor_cfg": SceneEntityCfg("contact_sensor", body_names=[".*ankle.*"])},
     )
     dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=-2.0)

@@ -21,10 +21,14 @@ class ActorCritic_DWAQ(nn.Module):
         obs_dim: int,
         activation: str = "elu",
         init_noise_std: float = 1.0,
+        std_min: float = 1e-6,
+        std_max: float = 1e3,
     ):
         super().__init__()
 
         self.obs_dim = obs_dim
+        self.std_min = float(std_min)
+        self.std_max = float(std_max)
 
         self.activation = get_activation(activation)
         actor_input_dim = num_actor_obs
@@ -70,6 +74,7 @@ class ActorCritic_DWAQ(nn.Module):
         )
 
         self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
+        self.clamp_std()
         self.distribution = None
         # disable args validation for speedup
         Normal.set_default_validate_args = False
@@ -88,6 +93,10 @@ class ActorCritic_DWAQ(nn.Module):
 
     def reset(self, dones=None):
         pass
+
+    def clamp_std(self):
+        with torch.no_grad():
+            self.std.clamp_(self.std_min, self.std_max)
 
     def forward(self):
         raise NotImplementedError
@@ -152,7 +161,7 @@ class ActorCritic_DWAQ(nn.Module):
         # prepare std: ensure positive and same shape as mean
         std_param = self.std
         # clamp learned std to reasonable range to avoid numerical issues
-        std_param = torch.clamp(std_param, min=1e-6, max=1e3)
+        std_param = torch.clamp(std_param, min=self.std_min, max=self.std_max)
         std = std_param.unsqueeze(0).expand_as(mean)
 
         # final safety: if any non-finite remain, replace and log
