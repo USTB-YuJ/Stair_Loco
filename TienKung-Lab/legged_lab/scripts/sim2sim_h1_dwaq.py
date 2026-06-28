@@ -255,6 +255,9 @@ def main():
     available_scenes = g1_sim2sim.get_available_scenes(mjcf_dir)
     if os.path.isfile(default_model):
         available_scenes["h1"] = default_model
+    payload_model = os.path.join(mjcf_dir, "h1_payload_horizontal.xml")
+    if os.path.isfile(payload_model):
+        available_scenes["h1_payload"] = payload_model
     scene_names = list(available_scenes.keys())
 
     parser = argparse.ArgumentParser(

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from isaaclab.assets import Articulation
 from isaaclab.assets import AssetBase
 from isaaclab.managers import SceneEntityCfg
 
@@ -246,6 +247,63 @@ DEFAULT_SKY_TEXTURES = [
     # "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Skies/Cloudy/abandoned_parking_4k.hdr",
     # "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Skies/Cloudy/evening_road_01_4k.hdr",
 ]
+
+
+def randomize_payload_mount_joints(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor | None,
+    joint_ranges: dict[str, tuple[float, float]],
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+):
+    """Sample payload mount joint targets and lock the payload to that pose.
+
+    The sampled values are absolute targets around the URDF default pose.  If the
+    environment exposes ``payload_mount_target``, this function also updates that
+    buffer so the environment can keep sending the same target during every
+    physics substep.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    if env_ids is None:
+        env_ids = torch.arange(env.scene.num_envs, device=asset.data.default_joint_pos.device)
+    else:
+        env_ids = env_ids.to(device=asset.data.default_joint_pos.device)
+
+    joint_ids = asset_cfg.joint_ids
+    if joint_ids == slice(None):
+        joint_ids = list(range(asset.data.default_joint_pos.shape[1]))
+    elif isinstance(joint_ids, int):
+        joint_ids = [joint_ids]
+    else:
+        joint_ids = list(joint_ids)
+
+    joint_names = asset_cfg.joint_names
+    if joint_names is None:
+        joint_names = [asset.joint_names[joint_id] for joint_id in joint_ids]
+    elif isinstance(joint_names, str):
+        joint_names = [joint_names]
+    else:
+        joint_names = list(joint_names)
+
+    if len(joint_names) != len(joint_ids):
+        raise ValueError(
+            "payload mount joint names and ids must have the same length: "
+            f"{len(joint_names)} names vs {len(joint_ids)} ids"
+        )
+
+    default_pos = asset.data.default_joint_pos[env_ids[:, None], joint_ids]
+    sampled_offsets = torch.zeros_like(default_pos)
+    for col, joint_name in enumerate(joint_names):
+        if joint_name not in joint_ranges:
+            raise KeyError(f"Missing payload mount range for joint: {joint_name}")
+        low, high = joint_ranges[joint_name]
+        sampled_offsets[:, col] = torch.empty(len(env_ids), device=sampled_offsets.device).uniform_(low, high)
+
+    joint_pos = default_pos + sampled_offsets
+    joint_vel = torch.zeros_like(joint_pos)
+    asset.write_joint_state_to_sim(joint_pos, joint_vel, joint_ids=joint_ids, env_ids=env_ids)
+
+    if hasattr(env, "payload_mount_target") and env.payload_mount_target is not None:
+        env.payload_mount_target[env_ids] = joint_pos
 
 
 def randomize_terrain_material(

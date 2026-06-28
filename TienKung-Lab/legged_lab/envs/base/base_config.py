@@ -88,6 +88,9 @@ class RobotCfg:
     critic_obs_history_length: int = 10
     dwaq_obs_history_length: int = 10  # Observation history length for DWAQ encoder
     action_scale: float = 0.25
+    controlled_joint_names: list[str] | None = None
+    payload_mount_joint_names: list[str] = []
+    payload_mount_joint_ranges: dict[str, tuple[float, float]] = {}
     terminate_contacts_body_names: list = []
     termination_contact_force_threshold: float = 10.0
     # Reset on excessive tilt. Set < 0 to disable this criterion.

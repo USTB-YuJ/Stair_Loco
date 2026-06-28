@@ -165,17 +165,73 @@ class G1DwaqEnv(VecEnv):
             self.event_manager.apply(mode="startup")
         self.reset(env_ids)
 
+    def _resolve_payload_mount_joints(self) -> tuple[list[int], list[str]]:
+        """Resolve payload mount joints that are simulated but not policy-controlled."""
+        payload_mount_joint_names = getattr(self.cfg.robot, "payload_mount_joint_names", []) or []
+        if not payload_mount_joint_names:
+            return [], []
+        joint_ids, joint_names = self.robot.find_joints(payload_mount_joint_names, preserve_order=True)
+        return list(joint_ids), list(joint_names)
+
+    def _resolve_controlled_joints(self) -> tuple[list[int], list[str]]:
+        """Resolve the policy joint order independently from articulation joint order."""
+        controlled_joint_names = getattr(self.cfg.robot, "controlled_joint_names", None)
+        if controlled_joint_names:
+            joint_ids, joint_names = self.robot.find_joints(controlled_joint_names, preserve_order=True)
+            return list(joint_ids), list(joint_names)
+
+        excluded_joint_ids = set(self.payload_mount_joint_ids)
+        joint_ids = [idx for idx in range(self.robot.data.default_joint_pos.shape[1]) if idx not in excluded_joint_ids]
+        joint_names = [self.robot.joint_names[idx] for idx in joint_ids]
+        return joint_ids, joint_names
+
+    def _resolve_action_scale(self):
+        """Return scalar or controlled-joint action scale tensor."""
+        action_scale = self.cfg.robot.action_scale
+        if isinstance(action_scale, (list, tuple)):
+            action_scale_tensor = torch.tensor(action_scale, dtype=torch.float, device=self.device)
+            if action_scale_tensor.numel() == self.robot.data.default_joint_pos.shape[1]:
+                return action_scale_tensor[self.controlled_joint_ids]
+            if action_scale_tensor.numel() == len(self.controlled_joint_ids):
+                return action_scale_tensor
+            raise ValueError(
+                "robot.action_scale must be scalar, full-articulation length, or controlled-joint length; "
+                f"got {action_scale_tensor.numel()} values for {self.robot.data.default_joint_pos.shape[1]} joints "
+                f"and {len(self.controlled_joint_ids)} controlled joints."
+            )
+        return action_scale
+
+    def _set_payload_mount_position_targets(self, env_ids: torch.Tensor | None = None) -> None:
+        """Keep payload mount joints locked to their sampled per-environment target."""
+        if len(self.payload_mount_joint_ids) == 0 or self.payload_mount_target is None:
+            return
+        if env_ids is None:
+            self.robot.set_joint_position_target(self.payload_mount_target, joint_ids=self.payload_mount_joint_ids)
+        else:
+            self.robot.set_joint_position_target(
+                self.payload_mount_target[env_ids], joint_ids=self.payload_mount_joint_ids, env_ids=env_ids
+            )
+
     def init_buffers(self):
         """Initialize all internal buffers for the environment."""
         self.extras = {}
 
         self.max_episode_length_s = self.cfg.scene.max_episode_length_s
         self.max_episode_length = np.ceil(self.max_episode_length_s / self.step_dt)
-        self.num_actions = self.robot.data.default_joint_pos.shape[1]
+        self.payload_mount_joint_ids, self.payload_mount_joint_names = self._resolve_payload_mount_joints()
+        self.controlled_joint_ids, self.controlled_joint_names = self._resolve_controlled_joints()
+        self.num_actions = len(self.controlled_joint_ids)
+        self.num_robot_joints = self.robot.data.default_joint_pos.shape[1]
+        self.default_joint_pos_controlled = self.robot.data.default_joint_pos[:, self.controlled_joint_ids]
+        self.default_joint_vel_controlled = self.robot.data.default_joint_vel[:, self.controlled_joint_ids]
+        if self.payload_mount_joint_ids:
+            self.payload_mount_target = self.robot.data.default_joint_pos[:, self.payload_mount_joint_ids].clone()
+        else:
+            self.payload_mount_target = None
         self.clip_actions = self.cfg.normalization.clip_actions
         self.clip_obs = self.cfg.normalization.clip_observations
 
-        self.action_scale = self.cfg.robot.action_scale
+        self.action_scale = self._resolve_action_scale()
         self.action_buffer = DelayBuffer(
             self.cfg.domain_rand.action_delay.params["max_delay"], self.num_envs, device=self.device
         )
@@ -237,8 +293,8 @@ class G1DwaqEnv(VecEnv):
         ang_vel = robot.data.root_ang_vel_b
         projected_gravity = robot.data.projected_gravity_b
         command = self.command_generator.command
-        joint_pos = robot.data.joint_pos - robot.data.default_joint_pos
-        joint_vel = robot.data.joint_vel - robot.data.default_joint_vel
+        joint_pos = robot.data.joint_pos[:, self.controlled_joint_ids] - self.default_joint_pos_controlled
+        joint_vel = robot.data.joint_vel[:, self.controlled_joint_ids] - self.default_joint_vel_controlled
         action = self.action_buffer._circular_buffer.buffer[:, -1, :]
 
         # Build actor observation with optional gait phase information
@@ -412,6 +468,7 @@ class G1DwaqEnv(VecEnv):
         # Fill with zeros to avoid using stale data
         self.prev_critic_obs[env_ids] = 0.0
 
+        self._set_payload_mount_position_targets(env_ids)
         self.scene.write_data_to_sim()
         self.sim.forward()
 
@@ -446,11 +503,12 @@ class G1DwaqEnv(VecEnv):
         delayed_actions = self.action_buffer.compute(actions)
 
         clipped_actions = torch.clip(delayed_actions, -self.clip_actions, self.clip_actions).to(self.device)
-        processed_actions = clipped_actions * self.action_scale + self.robot.data.default_joint_pos
+        processed_actions = clipped_actions * self.action_scale + self.default_joint_pos_controlled
 
         for _ in range(self.cfg.sim.decimation):
             self.sim_step_counter += 1
-            self.robot.set_joint_position_target(processed_actions)
+            self.robot.set_joint_position_target(processed_actions, joint_ids=self.controlled_joint_ids)
+            self._set_payload_mount_position_targets()
             self.scene.write_data_to_sim()
             self.sim.step(render=False)
             self.scene.update(dt=self.physics_dt)

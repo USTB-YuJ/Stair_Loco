@@ -137,6 +137,48 @@ H1_CFG = ArticulationCfg(
 )
 
 
+# Payload body name used by H1 DWAQ randomization: h1_extinguisher_payload.
+H1_PAYLOAD_HORIZONTAL_CFG = H1_CFG.replace(
+    spawn=sim_utils.UrdfFileCfg(
+        asset_path=f"{ISAAC_ASSET_DIR}/h1_description/urdf/h1_payload_horizontal.urdf",
+        usd_dir=f"{ISAAC_ASSET_DIR}/unitree/h1_payload_horizontal",
+        usd_file_name="h1_payload_horizontal.usd",
+        fix_base=False,
+        merge_fixed_joints=False,
+        self_collision=True,
+        replace_cylinders_with_capsules=False,
+        joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
+            drive_type="force",
+            target_type="position",
+            gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=0.0, damping=0.0),
+        ),
+        activate_contact_sensors=True,
+        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            disable_gravity=False,
+            retain_accelerations=False,
+            linear_damping=0.0,
+            angular_damping=0.0,
+            max_linear_velocity=1000.0,
+            max_angular_velocity=1000.0,
+            max_depenetration_velocity=1.0,
+        ),
+        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            enabled_self_collisions=True, solver_position_iteration_count=4, solver_velocity_iteration_count=4
+        ),
+    ),
+    actuators={
+        **H1_CFG.actuators,
+        "payload_mount": ImplicitActuatorCfg(
+            joint_names_expr=["payload_mount_.*_joint"],
+            effort_limit_sim=1000.0,
+            velocity_limit_sim=1.0,
+            stiffness=20000.0,
+            damping=500.0,
+        ),
+    },
+)
+
+
 H1_2_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
         usd_path=f"{ISAAC_ASSET_DIR}/unitree/h1_2/h1_2.usd",
