@@ -24,8 +24,9 @@ class H1DwaqRewardCfg(H1RewardCfg):
     upright_posture_reward = RewTerm(
         func=mdp.body_orientation_exp,
         params={"asset_cfg": SceneEntityCfg("robot", body_names=".*torso.*"), "std": 0.3},
-        weight=2.0,
+        weight=2.5,
     )
+    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.08)
     alive = RewTerm(func=mdp.alive, weight=0.15)
     idle_penalty = RewTerm(
         func=mdp.idle_when_commanded,

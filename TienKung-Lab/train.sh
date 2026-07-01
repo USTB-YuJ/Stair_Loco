@@ -6,6 +6,6 @@ python legged_lab/scripts/train.py \
     --max_iterations=80000 \
     --headless \
     --resume=True \
-    --load_run=2026-06-10_23-38-11 \
-    --checkpoint=model_13000.pt \
-    --run_name=resume_dwaq_low_level
+    --load_run=2026-06-12_11-47-51_resume_dwaq_low_level \
+    --checkpoint=model_18000.pt \
+    --run_name=payload_resume_m18000_upright25_angvel008

@@ -59,3 +59,16 @@ def test_sim2sim_lists_payload_scene():
     source = _read("legged_lab/scripts/sim2sim_h1_dwaq.py")
     assert "h1_payload_horizontal.xml" in source
     assert "available_scenes[\"h1_payload\"]" in source
+    assert "available_scenes[\"h1_payload_stairs\"]" in source
+
+def test_sim2sim_payload_stair_scene_and_default_script():
+    scene_path = REPO_ROOT / "legged_lab/assets/h1_description/mjcf/scene_payload_horizontal.xml"
+    assert scene_path.exists()
+    scene = scene_path.read_text(encoding="utf-8")
+    assert '<include file="h1_payload_horizontal.xml" />' in scene
+    assert '<include file="h1.xml" />' not in scene
+    assert 'name="floor"' in scene
+    assert 'type="box"' in scene
+
+    sim2sim = _read("sim2sim.sh")
+    assert "scene_payload_horizontal.xml" in sim2sim

@@ -70,3 +70,14 @@ def test_h1_dwaq_task_is_registered():
         registered_tasks.add(node.args[0].value)
 
     assert "h1_dwaq" in registered_tasks
+
+
+def test_h1_dwaq_payload_reward_weights_are_declared():
+    source = (REPO_ROOT / "legged_lab/envs/h1/h1_dwaq_config.py").read_text(encoding="utf-8")
+
+    assert "upright_posture_reward = RewTerm(" in source
+    assert "weight=2.5" in source
+    assert (
+        "ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.08)"
+        in source
+    )

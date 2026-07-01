@@ -258,6 +258,9 @@ def main():
     payload_model = os.path.join(mjcf_dir, "h1_payload_horizontal.xml")
     if os.path.isfile(payload_model):
         available_scenes["h1_payload"] = payload_model
+    payload_stairs_model = os.path.join(mjcf_dir, "scene_payload_horizontal.xml")
+    if os.path.isfile(payload_stairs_model):
+        available_scenes["h1_payload_stairs"] = payload_stairs_model
     scene_names = list(available_scenes.keys())
 
     parser = argparse.ArgumentParser(
