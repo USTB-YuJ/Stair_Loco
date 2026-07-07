@@ -128,10 +128,10 @@
         <geom class="collision" mesh="torso_link"/>
         <geom class="visual" material="white" mesh="logo_link"/>
         <site name="imu" size="0.01" pos="-0.04452 -0.01891 0.27756"/>
-        <body name="h1_extinguisher_payload" pos="-0.18 0 0.10" quat="0.70710678 0.70710678 0 0">
-          <inertial pos="0 0 0" mass="3.0" diaginertia="0.05379375 0.0063375 0.05379375"/>
-          <geom name="h1_extinguisher_payload_visual" type="cylinder" size="0.065 0.225" material="extinguisher_red" contype="0" conaffinity="0" group="2"/>
-          <geom name="h1_extinguisher_payload_collision" type="cylinder" size="0.065 0.225" group="3" mass="0" density="0"/>
+        <body name="h1_extinguisher_payload" pos="-0.18 0 0.05" quat="1 0 0 0">
+          <inertial pos="0 0 0" mass="3.0" diaginertia="0.04196725 0.001922 0.04196725"/>
+          <geom name="h1_extinguisher_payload_visual" type="box" size="0.031 0.2025 0.031" material="extinguisher_red" contype="0" conaffinity="0" group="2"/>
+          <geom name="h1_extinguisher_payload_collision" type="box" size="0.031 0.2025 0.031" group="3" mass="0" density="0"/>
         </body>
         <body name="left_shoulder_pitch_link" pos="0.0055 0.15535 0.42999" quat="0.976296 0.216438 0 0">
           <inertial pos="0.005045 0.053657 -0.015715" quat="0.814858 0.579236 -0.0201072 -0.00936488" mass="1.033"

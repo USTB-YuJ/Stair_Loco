@@ -3,9 +3,9 @@ python legged_lab/scripts/train.py \
     --gpu=0 \
     --logger=tensorboard \
     --num_envs=4096 \
-    --max_iterations=80000 \
+    --max_iterations=50000 \
     --headless \
     --resume=True \
     --load_run=2026-06-12_11-47-51_resume_dwaq_low_level \
     --checkpoint=model_18000.pt \
-    --run_name=payload_resume_m18000_upright25_angvel008
+    --run_name=payload_resume_m18000_upright25_angvel008_2

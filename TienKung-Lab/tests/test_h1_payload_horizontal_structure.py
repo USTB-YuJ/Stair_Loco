@@ -45,14 +45,14 @@ def test_mujoco_horizontal_payload_model_exists():
     assert path.exists()
     source = path.read_text(encoding="utf-8")
     assert "h1_extinguisher_payload" in source
-    assert "pos=\"-0.18 0 0.10\"" in source
-    assert "type=\"cylinder\"" in source
-    assert "quat=\"0.70710678 0.70710678 0 0\"" in source
+    assert "pos=\"-0.18 0 0.05\"" in source
+    assert "type=\"box\"" in source
+    assert "quat=\"1 0 0 0\"" in source
 
 
-def test_urdf_horizontal_payload_nominal_mount_is_lowered():
+def test_urdf_horizontal_payload_nominal_mount_is_lowered_to_5cm():
     source = _read("legged_lab/assets/h1_description/urdf/h1_payload_horizontal.urdf")
-    assert "<origin xyz=\"-0.18 0 0.10\" rpy=\"0 0 0\"/>" in source
+    assert "<origin xyz=\"-0.18 0 0.05\" rpy=\"0 0 0\"/>" in source
 
 
 def test_sim2sim_lists_payload_scene():
@@ -72,3 +72,12 @@ def test_sim2sim_payload_stair_scene_and_default_script():
 
     sim2sim = _read("sim2sim.sh")
     assert "scene_payload_horizontal.xml" in sim2sim
+
+def test_horizontal_payload_dimensions_match_405_by_62_by_62_mm_box():
+    urdf = _read("legged_lab/assets/h1_description/urdf/h1_payload_horizontal.urdf")
+    assert '<box size="0.062 0.405 0.062"/>' in urdf
+    assert '<inertia ixx="0.04196725" ixy="0" ixz="0" iyy="0.001922" iyz="0" izz="0.04196725"/>' in urdf
+
+    mjcf = _read("legged_lab/assets/h1_description/mjcf/h1_payload_horizontal.xml")
+    assert 'size="0.031 0.2025 0.031"' in mjcf
+    assert 'diaginertia="0.04196725 0.001922 0.04196725"' in mjcf
