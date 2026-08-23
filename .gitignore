@@ -151,3 +151,14 @@ PROJECT_REVIEW.md
 TienKung-Lab/logs/
 TienKung-Lab/runs/
 TienKung-Lab/wandb/
+
+# Local experiment archives and rollback snapshots
+TienKung-Lab/training_logs/
+rollback_backups/
+
+# Keep experiment notes and source snapshots under policy_h1_dwaq,
+# but do not stage generated videos, logs, text dumps, or model weights.
+policy_h1_dwaq/**/*.mp4
+policy_h1_dwaq/**/*.log
+policy_h1_dwaq/**/*.txt
+policy_h1_dwaq/**/*.pt

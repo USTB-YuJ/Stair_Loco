@@ -8,6 +8,7 @@ import argparse
 import os
 import sys
 
+import mujoco
 import numpy as np
 
 try:
@@ -84,6 +85,7 @@ class H1DwaqSim2SimCfg:
         enable = True
         period = 0.8
         offset = 0.5
+        standing_command_threshold = 0.1
 
 
 class H1DwaqMujocoRunner(g1_sim2sim.G1DwaqMujocoRunner):
@@ -182,6 +184,12 @@ class H1DwaqMujocoRunner(g1_sim2sim.G1DwaqMujocoRunner):
             (self.cfg.sim.dwaq_obs_history_length, self.cfg.sim.num_obs_per_step),
             dtype=np.float32,
         )
+        self.auto_reset_on_flat_return = False
+        self.auto_reset_climbed_height = 1.15
+        self.auto_reset_flat_x_min = 1.14
+        self.auto_reset_flat_x_max = 7.37
+        self.auto_reset_armed = False
+        self.auto_reset_count = 0
 
     def build_joint_mappings(self) -> None:
         mujoco_indices = {name: idx for idx, name in enumerate(MUJOCO_DOF_NAMES)}
@@ -203,8 +211,16 @@ class H1DwaqMujocoRunner(g1_sim2sim.G1DwaqMujocoRunner):
         period = self.cfg.gait_phase.period
         offset = self.cfg.gait_phase.offset
 
-        phase_left = (self.gait_phase_time % period) / period
-        phase_right = ((self.gait_phase_time / period) + offset) % 1.0
+        command_magnitude = np.linalg.norm(self.command_vel[:2]) + abs(self.command_vel[2])
+        if command_magnitude < self.cfg.gait_phase.standing_command_threshold:
+            # Match training: freeze at a double-support phase for zero-speed
+            # commands instead of asking the policy to alternate its feet.
+            self.gait_phase_time = 0.0
+            phase_left = 0.0
+            phase_right = offset
+        else:
+            phase_left = (self.gait_phase_time % period) / period
+            phase_right = ((self.gait_phase_time / period) + offset) % 1.0
 
         sin_left = np.sin(2 * np.pi * phase_left)
         sin_right = np.sin(2 * np.pi * phase_right)
@@ -212,7 +228,122 @@ class H1DwaqMujocoRunner(g1_sim2sim.G1DwaqMujocoRunner):
         cos_right = np.cos(2 * np.pi * phase_right)
         return np.array([sin_left, sin_right, cos_left, cos_right], dtype=np.float32)
 
+    def maybe_auto_reset_after_flat_return(self) -> None:
+        """Reset after a climbed robot returns to either flat end of the stair course."""
+        if not self.auto_reset_on_flat_return:
+            return
+
+        root_x = float(self.data.qpos[0])
+        root_height = float(self.data.qpos[2])
+        inside_stair_course = self.auto_reset_flat_x_min < root_x < self.auto_reset_flat_x_max
+
+        if not self.auto_reset_armed:
+            if inside_stair_course and root_height >= self.auto_reset_climbed_height:
+                self.auto_reset_armed = True
+                print(
+                    f"[INFO] Auto-reset armed at x={root_x:.3f}m, "
+                    f"h={root_height:.3f}m, t={self.data.time:.2f}s"
+                )
+            return
+
+        returned_to_flat = (
+            root_x <= self.auto_reset_flat_x_min
+            or root_x >= self.auto_reset_flat_x_max
+        )
+        if not returned_to_flat:
+            return
+
+        reset_time = float(self.data.time)
+        self.auto_reset_count += 1
+        print(
+            f"[INFO] Auto-reset #{self.auto_reset_count}: returned to flat at "
+            f"x={root_x:.3f}m, h={root_height:.3f}m, t={reset_time:.2f}s"
+        )
+        self.set_initial_pose()
+        # Preserve total simulation time so repeated attempts cannot extend the
+        # requested video duration indefinitely.
+        self.data.time = reset_time
+        self.action.fill(0.0)
+        self.obs_history.fill(0.0)
+        self.gait_phase_time = 0.0
+        self.episode_length_buf = 0
+        self.command_vx_switch_triggered = False
+        self.command_vx_second_switch_triggered = False
+        self.auto_reset_armed = False
+        mujoco.mj_forward(self.model, self.data)
+
     def get_current_obs(self) -> np.ndarray:
+        self.maybe_auto_reset_after_flat_return()
+
+        command_schedule = getattr(self, "command_vx_schedule", ())
+        schedule_index = getattr(self, "command_vx_schedule_index", 0)
+        command_vx_limit = getattr(self, "command_vx_limit", 1.0)
+        while (
+            schedule_index < len(command_schedule)
+            and self.data.time >= command_schedule[schedule_index][0]
+        ):
+            switch_time, scheduled_vx = command_schedule[schedule_index]
+            previous_vx = float(self.command_vel[0])
+            self.command_vel[0] = np.clip(
+                scheduled_vx, -command_vx_limit, command_vx_limit
+            )
+            schedule_index += 1
+            self.command_vx_schedule_index = schedule_index
+            print(
+                f"[INFO] Scheduled forward command switch at "
+                f"x={self.data.qpos[0]:.3f}m, h={self.data.qpos[2]:.3f}m, "
+                f"t={self.data.time:.2f}s (target {switch_time:.2f}s): "
+                f"{previous_vx:.2f} -> {self.command_vel[0]:.2f} m/s"
+            )
+
+        switch_x = getattr(self, "command_vx_switch_x", None)
+        switch_height = getattr(self, "command_vx_switch_height", None)
+        switch_time = getattr(self, "command_vx_switch_time", None)
+        switch_vx = getattr(self, "command_vx_after_switch", None)
+        switch_triggered = getattr(self, "command_vx_switch_triggered", False)
+        switch_trigger_reached = (
+            (switch_x is not None and self.data.qpos[0] >= switch_x)
+            or (switch_height is not None and self.data.qpos[2] >= switch_height)
+            or (switch_time is not None and self.data.time >= switch_time)
+        )
+        if (
+            (switch_x is not None or switch_height is not None or switch_time is not None)
+            and switch_vx is not None
+            and not switch_triggered
+            and switch_trigger_reached
+        ):
+            previous_vx = float(self.command_vel[0])
+            self.command_vel[0] = np.clip(
+                switch_vx, -command_vx_limit, command_vx_limit
+            )
+            self.command_vx_switch_triggered = True
+            print(
+                f"[INFO] Forward command switched at x={self.data.qpos[0]:.3f}m, "
+                f"h={self.data.qpos[2]:.3f}m, "
+                f"t={self.data.time:.2f}s: {previous_vx:.2f} -> {self.command_vel[0]:.2f} m/s"
+            )
+
+        second_switch_height = getattr(self, "command_vx_second_switch_height", None)
+        second_switch_vx = getattr(self, "command_vx_after_second_switch", None)
+        second_switch_triggered = getattr(self, "command_vx_second_switch_triggered", False)
+        if (
+            self.command_vx_switch_triggered
+            and second_switch_height is not None
+            and second_switch_vx is not None
+            and not second_switch_triggered
+            and self.data.qpos[2] >= second_switch_height
+        ):
+            previous_vx = float(self.command_vel[0])
+            self.command_vel[0] = np.clip(
+                second_switch_vx, -command_vx_limit, command_vx_limit
+            )
+            self.command_vx_second_switch_triggered = True
+            print(
+                f"[INFO] Second forward command switch at x={self.data.qpos[0]:.3f}m, "
+                f"h={self.data.qpos[2]:.3f}m, "
+                f"t={self.data.time:.2f}s: {previous_vx:.2f} -> {self.command_vel[0]:.2f} m/s"
+            )
+
         # MuJoCo-order states
         dof_pos_mj = self.data.qpos[7 : 7 + self.num_actions].copy()
         dof_vel_mj = self.data.qvel[6 : 6 + self.num_actions].copy()
@@ -278,6 +409,83 @@ def main():
     )
     parser.add_argument("--scene-file", type=str, default=None, help="explicit scene file path")
     parser.add_argument("--duration", type=float, default=100.0, help="simulation duration in seconds")
+    parser.add_argument(
+        "--auto-reset-on-flat-return",
+        action="store_true",
+        help="after climbing, reset when the robot returns to either flat end of the stair course",
+    )
+    parser.add_argument(
+        "--auto-reset-climbed-height",
+        type=float,
+        default=1.15,
+        help="base height that arms automatic flat-return reset",
+    )
+    parser.add_argument(
+        "--auto-reset-flat-x-min",
+        type=float,
+        default=1.14,
+        help="x coordinate at or below which the robot is back on the approach flat",
+    )
+    parser.add_argument(
+        "--auto-reset-flat-x-max",
+        type=float,
+        default=7.37,
+        help="x coordinate at or above which the robot has reached the far flat",
+    )
+    parser.add_argument(
+        "--command-vx",
+        type=float,
+        default=0.0,
+        help="initial forward velocity command in m/s; 0.2 matches one press of key 8",
+    )
+    parser.add_argument(
+        "--command-vx-switch-x",
+        type=float,
+        default=None,
+        help="switch the forward command when the base reaches this world x position",
+    )
+    parser.add_argument(
+        "--command-vx-after-switch",
+        type=float,
+        default=None,
+        help="forward velocity command used after the configured position/height trigger",
+    )
+    parser.add_argument(
+        "--command-vx-switch-height",
+        type=float,
+        default=None,
+        help="switch the forward command when the base reaches this world height",
+    )
+    parser.add_argument(
+        "--command-vx-switch-time",
+        type=float,
+        default=None,
+        help="switch the forward command when simulation time reaches this value in seconds",
+    )
+    parser.add_argument(
+        "--command-vx-second-switch-height",
+        type=float,
+        default=None,
+        help="after the first switch, switch again when base height reaches this value",
+    )
+    parser.add_argument(
+        "--command-vx-after-second-switch",
+        type=float,
+        default=None,
+        help="forward velocity command used after the second height trigger",
+    )
+    parser.add_argument(
+        "--command-vx-schedule",
+        type=str,
+        default=None,
+        help='comma-separated time:velocity stages, for example "10:0.6,20:0.8"',
+    )
+    parser.add_argument(
+        "--command-vx-limit",
+        type=float,
+        default=1.0,
+        help="absolute sim-only forward command limit; use 1.2 for an out-of-training-range stress test",
+    )
     parser.add_argument("--record-video", action="store_true", help="record MuJoCo MP4; press q to stop and save")
     parser.add_argument("--video-path", type=str, default=None, help="MP4 output path; default saves beside checkpoint")
     parser.add_argument("--video-fps", type=float, default=50.0, help="recording FPS")
@@ -290,6 +498,63 @@ def main():
     parser.add_argument("--video-follow-elevation", type=float, default=-28.0, help="follow camera elevation angle; default is more top-down")
     parser.add_argument("--list-scenes", action="store_true", help="list available scenes and exit")
     args = parser.parse_args()
+    if args.command_vx_limit <= 0.0:
+        parser.error("--command-vx-limit must be positive")
+
+    command_vx_schedule = []
+    if args.command_vx_schedule:
+        try:
+            for stage in args.command_vx_schedule.split(","):
+                switch_time_text, velocity_text = stage.split(":", maxsplit=1)
+                command_vx_schedule.append(
+                    (float(switch_time_text), float(velocity_text))
+                )
+        except ValueError:
+            parser.error(
+                "--command-vx-schedule must contain comma-separated "
+                "time:velocity pairs"
+            )
+        if any(stage[0] < 0.0 for stage in command_vx_schedule):
+            parser.error("--command-vx-schedule times must be non-negative")
+        if any(
+            next_stage[0] <= current_stage[0]
+            for current_stage, next_stage in zip(
+                command_vx_schedule, command_vx_schedule[1:]
+            )
+        ):
+            parser.error("--command-vx-schedule times must be strictly increasing")
+
+    switch_trigger_count = sum(
+        value is not None
+        for value in (
+            args.command_vx_switch_x,
+            args.command_vx_switch_height,
+            args.command_vx_switch_time,
+        )
+    )
+    if switch_trigger_count > 1:
+        parser.error(
+            "provide only one of --command-vx-switch-x, "
+            "--command-vx-switch-height, or --command-vx-switch-time"
+        )
+    if (switch_trigger_count == 0) != (args.command_vx_after_switch is None):
+        parser.error("a command switch trigger and --command-vx-after-switch must be provided together")
+    if (args.command_vx_second_switch_height is None) != (
+        args.command_vx_after_second_switch is None
+    ):
+        parser.error(
+            "--command-vx-second-switch-height and "
+            "--command-vx-after-second-switch must be provided together"
+        )
+    if args.command_vx_second_switch_height is not None and switch_trigger_count == 0:
+        parser.error("the second command switch requires a configured first command switch")
+    if command_vx_schedule and (
+        switch_trigger_count > 0 or args.command_vx_second_switch_height is not None
+    ):
+        parser.error(
+            "--command-vx-schedule cannot be combined with the single/second "
+            "command switch options"
+        )
 
     if args.list_scenes:
         print("\nAvailable scenes:")
@@ -350,6 +615,64 @@ def main():
         video_follow_yaw_offset=args.video_follow_yaw_offset,
         video_follow_elevation=args.video_follow_elevation,
     )
+    runner.command_vx_limit = args.command_vx_limit
+    runner.command_vel[0] = np.clip(
+        args.command_vx, -runner.command_vx_limit, runner.command_vx_limit
+    )
+    print(f"[INFO] Initial forward command: {runner.command_vel[0]:.2f} m/s")
+    runner.auto_reset_on_flat_return = args.auto_reset_on_flat_return
+    runner.auto_reset_climbed_height = args.auto_reset_climbed_height
+    runner.auto_reset_flat_x_min = args.auto_reset_flat_x_min
+    runner.auto_reset_flat_x_max = args.auto_reset_flat_x_max
+    if args.auto_reset_on_flat_return:
+        print(
+            f"[INFO] Auto-reset on flat return enabled: arm at h >= "
+            f"{args.auto_reset_climbed_height:.2f}m, flat when "
+            f"x <= {args.auto_reset_flat_x_min:.2f}m or "
+            f"x >= {args.auto_reset_flat_x_max:.2f}m"
+        )
+    runner.command_vx_switch_x = args.command_vx_switch_x
+    runner.command_vx_switch_height = args.command_vx_switch_height
+    runner.command_vx_switch_time = args.command_vx_switch_time
+    runner.command_vx_after_switch = args.command_vx_after_switch
+    runner.command_vx_switch_triggered = False
+    runner.command_vx_second_switch_height = args.command_vx_second_switch_height
+    runner.command_vx_after_second_switch = args.command_vx_after_second_switch
+    runner.command_vx_second_switch_triggered = False
+    runner.command_vx_schedule = command_vx_schedule
+    runner.command_vx_schedule_index = 0
+    if command_vx_schedule:
+        print(
+            "[INFO] Scheduled forward command stages: "
+            + ", ".join(
+                f"t >= {switch_time:.2f}s -> "
+                f"{np.clip(velocity, -runner.command_vx_limit, runner.command_vx_limit):.2f} m/s"
+                for switch_time, velocity in command_vx_schedule
+            )
+        )
+    if args.command_vx_switch_x is not None:
+        print(
+            f"[INFO] Scheduled forward command switch: x >= {args.command_vx_switch_x:.2f} m "
+            f"-> {np.clip(args.command_vx_after_switch, -runner.command_vx_limit, runner.command_vx_limit):.2f} m/s"
+        )
+    elif args.command_vx_switch_height is not None:
+        print(
+            f"[INFO] Scheduled forward command switch: base height >= "
+            f"{args.command_vx_switch_height:.2f} m "
+            f"-> {np.clip(args.command_vx_after_switch, -runner.command_vx_limit, runner.command_vx_limit):.2f} m/s"
+        )
+    elif args.command_vx_switch_time is not None:
+        print(
+            f"[INFO] Scheduled forward command switch: t >= "
+            f"{args.command_vx_switch_time:.2f} s "
+            f"-> {np.clip(args.command_vx_after_switch, -runner.command_vx_limit, runner.command_vx_limit):.2f} m/s"
+        )
+    if args.command_vx_second_switch_height is not None:
+        print(
+            f"[INFO] Scheduled second forward command switch: base height >= "
+            f"{args.command_vx_second_switch_height:.2f} m "
+            f"-> {np.clip(args.command_vx_after_second_switch, -runner.command_vx_limit, runner.command_vx_limit):.2f} m/s"
+        )
     runner.run()
 
 

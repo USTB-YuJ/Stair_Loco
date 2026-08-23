@@ -212,6 +212,122 @@ class G1DwaqEnv(VecEnv):
                 self.payload_mount_target[env_ids], joint_ids=self.payload_mount_joint_ids, env_ids=env_ids
             )
 
+    def _init_stair_terrain_statistics(self) -> None:
+        """Build the terrain-column map used by the stair-specific TensorBoard metrics.
+
+        Isaac Lab stores the terrain type as a column index.  The terrain generator
+        assigns those columns from the configured proportions, so reconstruct the
+        same mapping here instead of relying on a hard-coded column layout.
+        """
+        self.terrain_type_names: list[str] = []
+        self.terrain_type_columns: dict[str, list[int]] = {}
+
+        terrain_cfg = getattr(self.cfg.scene, "terrain_generator", None)
+        terrain_importer = getattr(self.scene, "terrain", None)
+        if terrain_cfg is None or terrain_importer is None or terrain_importer.terrain_origins is None:
+            return
+
+        sub_terrains = getattr(terrain_cfg, "sub_terrains", {})
+        if not sub_terrains:
+            return
+
+        names = list(sub_terrains.keys())
+        proportions = np.asarray([sub_terrains[name].proportion for name in names], dtype=np.float64)
+        total = proportions.sum()
+        if total <= 0.0:
+            return
+        cumulative = np.cumsum(proportions / total)
+        num_cols = int(terrain_cfg.num_cols)
+
+        for column in range(num_cols):
+            candidates = np.where(column / num_cols + 0.001 < cumulative)[0]
+            terrain_index = int(candidates[0]) if len(candidates) else len(names) - 1
+            terrain_name = names[terrain_index]
+            self.terrain_type_names.append(terrain_name)
+            self.terrain_type_columns.setdefault(terrain_name, []).append(column)
+
+    def _terrain_type_mask(self, terrain_types: torch.Tensor, terrain_name: str) -> torch.Tensor:
+        """Return a mask for one configured terrain type."""
+        mask = torch.zeros_like(terrain_types, dtype=torch.bool)
+        for column in self.terrain_type_columns.get(terrain_name, []):
+            mask |= terrain_types == column
+        return mask
+
+    def _stair_metric_name(self, terrain_name: str) -> str:
+        """Convert a terrain config name into a compact TensorBoard path segment."""
+        return terrain_name.replace("stairs_up_nosing_", "up_").replace("stairs_down_", "down_")
+
+    def _current_stair_terrain_stats(self) -> dict[str, torch.Tensor]:
+        """Report current level and population for each stair terrain type."""
+        if not self.terrain_type_names or not hasattr(self.scene.terrain, "terrain_types"):
+            return {}
+
+        terrain_types = self.scene.terrain.terrain_types
+        terrain_levels = self.scene.terrain.terrain_levels.float()
+        stats: dict[str, torch.Tensor] = {}
+        stair_names = [name for name in self.terrain_type_names if name.startswith("stairs_")]
+
+        for terrain_name in dict.fromkeys(stair_names):
+            mask = self._terrain_type_mask(terrain_types, terrain_name)
+            if not torch.any(mask):
+                continue
+            metric_name = self._stair_metric_name(terrain_name)
+            stats[f"Terrain/Stairs/{metric_name}/current_level"] = terrain_levels[mask].mean()
+            stats[f"Terrain/Stairs/{metric_name}/env_fraction"] = mask.float().mean()
+
+        # These aggregate values make the main up-stair trend easy to monitor
+        # without losing the per-width breakdown above.
+        for group_name, group_prefix in (("up", "stairs_up"), ("down", "stairs_down")):
+            group_mask = torch.zeros_like(terrain_types, dtype=torch.bool)
+            for terrain_name in dict.fromkeys(stair_names):
+                if terrain_name.startswith(group_prefix):
+                    group_mask |= self._terrain_type_mask(terrain_types, terrain_name)
+            if torch.any(group_mask):
+                stats[f"Terrain/Stairs/{group_name}/current_level"] = terrain_levels[group_mask].mean()
+                stats[f"Terrain/Stairs/{group_name}/env_fraction"] = group_mask.float().mean()
+        return stats
+
+    def _stair_episode_stats(
+        self,
+        env_ids: torch.Tensor,
+        distance: torch.Tensor,
+        move_up: torch.Tensor,
+        move_down: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        """Report episode outcomes grouped by the stair terrain column."""
+        if (
+            self.sim_step_counter <= 0
+            or len(self.terrain_type_names) == 0
+            or not hasattr(self.scene.terrain, "terrain_types")
+        ):
+            return {}
+
+        terrain_types = self.scene.terrain.terrain_types[env_ids]
+        episode_lengths = self.episode_length_buf[env_ids].float()
+        timeout = self.time_out_buf[env_ids].float()
+        stats: dict[str, torch.Tensor] = {}
+        stair_names = list(dict.fromkeys(name for name in self.terrain_type_names if name.startswith("stairs_")))
+
+        groups = [(name, self._terrain_type_mask(terrain_types, name)) for name in stair_names]
+        for group_name, group_prefix in (("up", "stairs_up"), ("down", "stairs_down")):
+            group_mask = torch.zeros_like(terrain_types, dtype=torch.bool)
+            for terrain_name in stair_names:
+                if terrain_name.startswith(group_prefix):
+                    group_mask |= self._terrain_type_mask(terrain_types, terrain_name)
+            groups.append((group_name, group_mask))
+
+        for terrain_name, mask in groups:
+            if not torch.any(mask):
+                continue
+            metric_name = self._stair_metric_name(terrain_name)
+            prefix = f"Terrain/Stairs/{metric_name}"
+            stats[f"{prefix}/episode_length"] = episode_lengths[mask].mean()
+            stats[f"{prefix}/distance"] = distance[mask].mean()
+            stats[f"{prefix}/timeout_rate"] = timeout[mask].mean()
+            stats[f"{prefix}/move_up_rate"] = move_up[mask].float().mean()
+            stats[f"{prefix}/move_down_rate"] = move_down[mask].float().mean()
+        return stats
+
     def init_buffers(self):
         """Initialize all internal buffers for the environment."""
         self.extras = {}
@@ -254,8 +370,24 @@ class G1DwaqEnv(VecEnv):
             name="contact_sensor", body_names=self.cfg.robot.terminate_contacts_body_names
         )
         self.termination_contact_cfg.resolve(self.scene)
-        self.feet_cfg = SceneEntityCfg(name="contact_sensor", body_names=self.cfg.robot.feet_body_names)
+        self.feet_cfg = SceneEntityCfg(
+            name="contact_sensor",
+            body_names=self.cfg.robot.feet_body_names,
+            preserve_order=True,
+        )
         self.feet_cfg.resolve(self.scene)
+        self.feet_robot_cfg = SceneEntityCfg(
+            name="robot",
+            body_names=self.cfg.robot.feet_body_names,
+            preserve_order=True,
+        )
+        self.feet_robot_cfg.resolve(self.scene)
+        self.feet_body_ids = self.feet_robot_cfg.body_ids
+        if len(self.feet_body_ids) != 2:
+            raise RuntimeError(
+                f"Expected ordered left/right feet, got body ids {self.feet_body_ids} "
+                f"for patterns {self.cfg.robot.feet_body_names}."
+            )
 
         # Initialize feet state buffers for privileged info
         num_feet = len(self.feet_cfg.body_ids)
@@ -282,6 +414,10 @@ class G1DwaqEnv(VecEnv):
         # terrain_height_at_feet: 每只脚下方的地形高度 (num_envs, 2)
         self.forward_obstacle_height = torch.zeros(self.num_envs, 2, device=self.device)
         self.terrain_height_at_feet = torch.zeros(self.num_envs, 2, device=self.device)
+
+        # Terrain columns are fixed for the lifetime of the simulation, while
+        # terrain levels change through curriculum updates.
+        self._init_stair_terrain_statistics()
 
         self.init_obs_buffer()
 
@@ -351,7 +487,7 @@ class G1DwaqEnv(VecEnv):
         robot = self.robot
         
         # Get feet body IDs
-        feet_body_ids = self.feet_cfg.body_ids
+        feet_body_ids = self.feet_body_ids
         
         # Get feet positions in world frame
         feet_pos_w = robot.data.body_pos_w[:, feet_body_ids, :]  # (num_envs, num_feet, 3)
@@ -570,11 +706,24 @@ class G1DwaqEnv(VecEnv):
         # Compute normalized phase from episode time
         # t = episode_length * step_dt, phase = (t % period) / period
         t = self.episode_length_buf.float() * self.step_dt
-        self.phase = (t % period) / period
+        walking_phase = (t % period) / period
+
+        # A cycling clock at a zero command makes the contact reward request
+        # alternating swing legs, which causes stepping in place. Freeze the
+        # clock at a double-support pose for standing commands. The observation
+        # dimensionality is unchanged, and moving commands keep the original
+        # periodic phase.
+        command = self.command_generator.command
+        command_magnitude = torch.linalg.norm(command[:, :2], dim=-1) + torch.abs(command[:, 2])
+        standing_threshold = getattr(gait_cfg, "standing_command_threshold", 0.1)
+        moving_mask = command_magnitude >= standing_threshold
+        self.phase = torch.where(moving_mask, walking_phase, torch.zeros_like(walking_phase))
         
         # Left leg uses base phase, right leg is offset
         self.phase_left = self.phase
-        self.phase_right = (self.phase + offset) % 1.0
+        walking_phase_right = (walking_phase + offset) % 1.0
+        standing_phase_right = torch.full_like(walking_phase_right, offset)
+        self.phase_right = torch.where(moving_mask, walking_phase_right, standing_phase_right)
         
         # Stack for convenience (used by some reward functions)
         self.leg_phase[:, 0] = self.phase_left
@@ -619,7 +768,7 @@ class G1DwaqEnv(VecEnv):
         robot_quat = self.robot.data.root_quat_w  # (num_envs, 4)
         
         # 获取脚的位置
-        feet_body_ids = self.feet_cfg.body_ids
+        feet_body_ids = self.feet_body_ids
         feet_pos = self.robot.data.body_pos_w[:, feet_body_ids, :]  # (num_envs, 2, 3)
         
         # 获取接触状态来判断哪只脚是支撑腿
@@ -826,9 +975,15 @@ class G1DwaqEnv(VecEnv):
             distance < torch.norm(self.command_generator.command[env_ids, :2], dim=1) * self.max_episode_length_s * 0.5
         )
         move_down *= ~move_up
+
+        # Collect the outcome before update_env_origins changes the terrain
+        # level/origin associated with the just-finished episode.
+        stair_stats = self._stair_episode_stats(env_ids, distance, move_up, move_down)
         self.scene.terrain.update_env_origins(env_ids, move_up, move_down)
         extras = {}
         extras["Curriculum/terrain_levels"] = torch.mean(self.scene.terrain.terrain_levels.float())
+        extras.update(self._current_stair_terrain_stats())
+        extras.update(stair_stats)
         return extras
 
     def get_observations(self):

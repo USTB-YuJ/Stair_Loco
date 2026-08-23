@@ -80,6 +80,8 @@ class GaitPhaseCfg:
     enable: bool = False           # Whether to add sin/cos phase to observations
     period: float = 0.8            # Gait period in seconds
     offset: float = 0.5            # Phase offset between left and right leg (0.5 = alternating)
+    standing_command_threshold: float = 0.1
+    """Freeze the clock below this command magnitude so both feet remain in stance."""
 
 
 @configclass

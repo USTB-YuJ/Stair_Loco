@@ -81,3 +81,41 @@ def test_h1_dwaq_payload_reward_weights_are_declared():
         "ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.08)"
         in source
     )
+
+def test_h1_dwaq_feet_orientation_reward_is_declared():
+    rewards_source = (REPO_ROOT / "legged_lab/mdp/rewards.py").read_text(encoding="utf-8")
+    h1_dwaq_source = (REPO_ROOT / "legged_lab/envs/h1/h1_dwaq_config.py").read_text(encoding="utf-8")
+
+    assert "def feet_orientation_l2(" in rewards_source
+    assert "feet_orientation_l2 = RewTerm(" in h1_dwaq_source
+    assert "func=mdp.feet_orientation_l2" in h1_dwaq_source
+    assert 'body_names=".*ankle.*"' in h1_dwaq_source
+    assert "weight=-0.25" in h1_dwaq_source
+
+
+def test_h1_dwaq_uses_lower_terrain_relative_base_height_reward():
+    source = (REPO_ROOT / "legged_lab/envs/h1/h1_dwaq_config.py").read_text(encoding="utf-8")
+    rewards_source = (REPO_ROOT / "legged_lab/mdp/rewards.py").read_text(encoding="utf-8")
+
+    assert "base_height = RewTerm(" in source
+    assert "func=mdp.base_height" in source
+    assert '"target_height": 0.95' in source
+    assert '"sensor_cfg": SceneEntityCfg("height_scanner")' in source
+    assert '"z": (-0.05, 0.05)' in source
+    assert "finite_hits = torch.isfinite(terrain_z)" in rewards_source
+    assert "valid_hit_count.clamp(min=1)" in rewards_source
+    assert "height_error = torch.nan_to_num(" in rewards_source
+
+
+def test_h1_dwaq_freezes_gait_phase_for_standing_commands():
+    base_source = (REPO_ROOT / "legged_lab/envs/base/base_config.py").read_text(encoding="utf-8")
+    env_source = (REPO_ROOT / "legged_lab/envs/g1/g1_dwaq_env.py").read_text(encoding="utf-8")
+    config_source = (REPO_ROOT / "legged_lab/envs/h1/h1_dwaq_config.py").read_text(encoding="utf-8")
+    sim2sim_source = (REPO_ROOT / "legged_lab/scripts/sim2sim_h1_dwaq.py").read_text(encoding="utf-8")
+
+    assert "standing_command_threshold: float = 0.1" in base_source
+    assert "moving_mask = command_magnitude >= standing_threshold" in env_source
+    assert "self.phase = torch.where(moving_mask, walking_phase" in env_source
+    assert "self.robot.gait_phase.standing_command_threshold = 0.1" in config_source
+    assert "command_magnitude < self.cfg.gait_phase.standing_command_threshold" in sim2sim_source
+    assert "self.gait_phase_time = 0.0" in sim2sim_source

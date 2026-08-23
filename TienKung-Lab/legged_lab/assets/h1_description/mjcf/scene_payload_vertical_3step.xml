@@ -1,0 +1,47 @@
+<mujoco model="Unitree H1 Payload Vertical Three Steps">
+  <include file="h1_payload_vertical.xml" />
+  <statistic center="2.5 0 0.45" extent="4.0" />
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0" />
+    <rgba haze="0.15 0.25 0.35 1" />
+    <global azimuth="-140" elevation="-30" />
+  </visual>
+  <asset>
+    <texture type="skybox" builtin="flat" rgb1="0 0 0" rgb2="0 0 0" width="512" height="3072" />
+    <texture
+      type="2d"
+      name="groundplane"
+      builtin="checker"
+      mark="edge"
+      rgb1="0.2 0.3 0.4"
+      rgb2="0.1 0.2 0.3"
+      markrgb="0.8 0.8 0.8"
+      width="300"
+      height="300"
+    />
+    <material
+      name="groundplane"
+      texture="groundplane"
+      texuniform="true"
+      texrepeat="5 5"
+      reflectance="0.2"
+    />
+  </asset>
+  <worldbody>
+    <light pos="0 0 1.5" dir="0 0 -1" directional="true" />
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" />
+
+    <!-- Three 31cm-deep, 15cm-high ascending steps. -->
+    <geom name="up_step_01" pos="1.31 0 0.075" type="box" size="0.155 10 0.075" />
+    <geom name="up_step_02" pos="1.62 0 0.225" type="box" size="0.155 10 0.075" />
+    <geom name="up_step_03" pos="1.93 0 0.375" type="box" size="0.155 10 0.075" />
+
+    <!-- The top platform keeps the three-step test from immediately dropping back to the floor. -->
+    <geom name="up_top_platform" pos="3.75 0 0.225" type="box" size="1.665 10 0.225" />
+
+    <!-- The top 1cm of every riser projects 1cm toward the lower (-x) tread. -->
+    <geom name="up_nose_01" pos="1.150 0 0.145" type="box" size="0.005 10 0.005" />
+    <geom name="up_nose_02" pos="1.460 0 0.295" type="box" size="0.005 10 0.005" />
+    <geom name="up_nose_03" pos="1.770 0 0.445" type="box" size="0.005 10 0.005" />
+  </worldbody>
+</mujoco>

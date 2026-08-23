@@ -24,7 +24,7 @@ import isaaclab.utils.math as math_utils
 import torch
 from isaaclab.assets import Articulation
 from isaaclab.managers import SceneEntityCfg
-from isaaclab.sensors import ContactSensor
+from isaaclab.sensors import ContactSensor, RayCaster
 
 if TYPE_CHECKING:
     from legged_lab.envs.base.base_env import BaseEnv
@@ -178,6 +178,17 @@ def body_orientation_l2(
     return torch.sum(torch.square(body_orientation[:, :2]), dim=1)
 
 
+def feet_orientation_l2(
+    env: BaseEnv | TienKungEnv | G1Env, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Penalize foot tilt from world-horizontal orientation for all selected feet."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    body_quat_w = asset.data.body_quat_w[:, asset_cfg.body_ids, :]
+    gravity_w = asset.data.GRAVITY_VEC_W[:, None, :].expand(-1, body_quat_w.shape[1], -1)
+    foot_gravity_b = math_utils.quat_apply_inverse(body_quat_w, gravity_w)
+    return torch.sum(torch.square(foot_gravity_b[:, :, :2]), dim=(1, 2))
+
+
 def body_orientation_exp(
     env: BaseEnv | TienKungEnv | G1Env,
     std: float,
@@ -235,15 +246,79 @@ def hip_yaw_action(env: TienKungEnv) -> torch.Tensor:
     return torch.sum(torch.abs(env.action[:, [env.left_leg_ids[2], env.right_leg_ids[2]]]), dim=1)
 
 
-def feet_y_distance(env: TienKungEnv) -> torch.Tensor:
-    """Penalize foot y-distance when the commanded y-velocity is low, to maintain a reasonable spacing."""
-    leftfoot = env.robot.data.body_pos_w[:, env.feet_body_ids[0], :] - env.robot.data.root_link_pos_w[:, :]
-    rightfoot = env.robot.data.body_pos_w[:, env.feet_body_ids[1], :] - env.robot.data.root_link_pos_w[:, :]
+def _ordered_feet_body_ids(env: BaseEnv | TienKungEnv | G1Env) -> list[int]:
+    """Return robot-body indices in deterministic left-foot, right-foot order."""
+    feet_body_ids = getattr(env, "feet_body_ids", None)
+    if feet_body_ids is None:
+        feet_body_ids, _ = env.robot.find_bodies(
+            ["left_ankle.*", "right_ankle.*"], preserve_order=True
+        )
+    if len(feet_body_ids) != 2:
+        raise RuntimeError(f"Expected exactly two ordered feet, got {feet_body_ids}.")
+    return feet_body_ids
+
+
+def feet_y_distance(
+    env: BaseEnv | TienKungEnv | G1Env,
+    target_separation: float = 0.299,
+    tolerance: float = 0.0,
+) -> torch.Tensor:
+    """Penalize lateral foot spacing error when lateral velocity is near zero.
+
+    The separation is signed (left minus right) in the base frame. A tolerance
+    avoids over-constraining the natural step width on stairs.
+    """
+    feet_body_ids = _ordered_feet_body_ids(env)
+    leftfoot = env.robot.data.body_pos_w[:, feet_body_ids[0], :] - env.robot.data.root_link_pos_w[:, :]
+    rightfoot = env.robot.data.body_pos_w[:, feet_body_ids[1], :] - env.robot.data.root_link_pos_w[:, :]
     leftfoot_b = math_utils.quat_apply(math_utils.quat_conjugate(env.robot.data.root_link_quat_w[:, :]), leftfoot)
     rightfoot_b = math_utils.quat_apply(math_utils.quat_conjugate(env.robot.data.root_link_quat_w[:, :]), rightfoot)
-    y_distance_b = torch.abs(leftfoot_b[:, 1] - rightfoot_b[:, 1] - 0.299)
+    signed_separation = leftfoot_b[:, 1] - rightfoot_b[:, 1]
+    y_distance_b = (torch.abs(signed_separation - target_separation) - tolerance).clamp(min=0.0)
     y_vel_flag = torch.abs(env.command_generator.command[:, 1]) < 0.1
     return y_distance_b * y_vel_flag
+
+
+def feet_crossing_humanoid(env: BaseEnv | TienKungEnv, margin: float = 0.04) -> torch.Tensor:
+    """Penalize the feet losing their left/right ordering in the base frame.
+
+    In the H1 convention the left foot should remain on the +y side of the
+    right foot. A Euclidean feet-too-near term cannot detect a crossing when
+    the feet are separated in x or z (which is common on a stair). This soft
+    hinge penalizes a small safety margin before the ordering is reversed,
+    without disabling foot self-collision.
+    """
+    feet_body_ids = _ordered_feet_body_ids(env)
+    leftfoot = env.robot.data.body_pos_w[:, feet_body_ids[0], :] - env.robot.data.root_link_pos_w[:, :]
+    rightfoot = env.robot.data.body_pos_w[:, feet_body_ids[1], :] - env.robot.data.root_link_pos_w[:, :]
+    root_quat = math_utils.quat_conjugate(env.robot.data.root_link_quat_w[:, :])
+    leftfoot_b = math_utils.quat_apply(root_quat, leftfoot)
+    rightfoot_b = math_utils.quat_apply(root_quat, rightfoot)
+    signed_separation = leftfoot_b[:, 1] - rightfoot_b[:, 1]
+    return (margin - signed_separation).clamp(min=0)
+
+
+def feet_yaw_alignment(
+    env: BaseEnv | TienKungEnv | G1Env,
+    deadband: float = 0.10,
+) -> torch.Tensor:
+    """Penalize inward/outward foot yaw relative to the base heading.
+
+    Roll and pitch are already handled by ``feet_orientation_l2``. This term
+    specifically targets the toe-in posture that a gravity-based orientation
+    reward cannot observe.
+    """
+    feet_body_ids = _ordered_feet_body_ids(env)
+    foot_quat_w = env.robot.data.body_quat_w[:, feet_body_ids, :]
+    foot_forward = torch.zeros_like(foot_quat_w[..., :3])
+    foot_forward[..., 0] = 1.0
+    foot_forward_w = math_utils.quat_apply(foot_quat_w, foot_forward)
+
+    root_quat_inv = math_utils.quat_conjugate(env.robot.data.root_link_quat_w).unsqueeze(1)
+    root_quat_inv = root_quat_inv.expand(-1, len(feet_body_ids), -1)
+    foot_forward_b = math_utils.quat_apply(root_quat_inv, foot_forward_w)
+    yaw_error = torch.atan2(foot_forward_b[..., 1], foot_forward_b[..., 0])
+    return torch.sum((torch.abs(yaw_error) - deadband).clamp(min=0.0) ** 2, dim=1)
 
 
 # Periodic gait-based reward function
@@ -383,9 +458,9 @@ def feet_swing_height(
     env: BaseEnv, 
     sensor_cfg: SceneEntityCfg,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    target_height: float = 0.08
+    target_height: float = 0.15
 ) -> torch.Tensor:
-    """Simple version: Penalize swing foot height deviation from fixed target.
+    """Penalize swing feet only when they are below a minimum height.
     
     This is the original simple implementation that uses absolute z-coordinate.
     Use feet_swing_height() for terrain-aware version.
@@ -394,7 +469,7 @@ def feet_swing_height(
         env: Environment.
         sensor_cfg: Contact sensor configuration for feet.
         asset_cfg: Robot configuration with body_ids for feet.
-        target_height: Target height for swing foot (default 0.08m).
+        target_height: Minimum swing-foot height (default 0.15m).
         
     Reference: DreamWaQ _reward_feet_swing_height()
     """
@@ -408,8 +483,10 @@ def feet_swing_height(
     # Get feet positions (z-coordinate)
     feet_pos_z = asset.data.body_pos_w[:, asset_cfg.body_ids, 2]  # (num_envs, num_feet)
     
-    # Penalize height error only during swing phase (not in contact)
-    pos_error = torch.square(feet_pos_z - target_height) * (~contact).float()
+    # Treat target_height as a lower bound so stair clearance is not punished
+    # when the foot rises above the nominal flat-ground height.
+    height_error = torch.relu(target_height - feet_pos_z)
+    pos_error = torch.square(height_error) * (~contact).float()
     
     return torch.sum(pos_error, dim=-1)
 
@@ -500,9 +577,10 @@ def terrain_aware_feet_clearance(
 def base_height(
     env: BaseEnv,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    target_height: float = 0.78
+    target_height: float = 0.78,
+    sensor_cfg: SceneEntityCfg | None = None,
 ) -> torch.Tensor:
-    """Penalize base height deviation from target.
+    """Penalize terrain-relative base height deviation from target.
     
     Encourages the robot to maintain a specific base height during locomotion.
     
@@ -510,12 +588,29 @@ def base_height(
         env: Environment.
         asset_cfg: Robot configuration.
         target_height: Target base height (default 0.78m for G1).
+        sensor_cfg: Optional height scanner used to estimate the local terrain
+            height. Without it, ``target_height`` is interpreted in world z.
         
     Reference: DreamWaQ _reward_base_height()
     """
     asset: Articulation = env.scene[asset_cfg.name]
-    current_height = asset.data.root_pos_w[:, 2]
-    return torch.square(current_height - target_height)
+    target_height_w: float | torch.Tensor = target_height
+    if sensor_cfg is not None:
+        sensor: RayCaster = env.scene[sensor_cfg.name]
+        terrain_z = sensor.data.ray_hits_w[..., 2]
+        finite_hits = torch.isfinite(terrain_z)
+        valid_hit_count = finite_hits.sum(dim=1)
+        terrain_height = torch.where(finite_hits, terrain_z, torch.zeros_like(terrain_z)).sum(dim=1)
+        terrain_height /= valid_hit_count.clamp(min=1)
+
+        # A ray caster may return inf when every ray misses. In that case,
+        # choose a zero-penalty fallback instead of contaminating PPO with inf.
+        fallback_height = asset.data.root_pos_w[:, 2] - target_height
+        terrain_height = torch.where(valid_hit_count > 0, terrain_height, fallback_height)
+        target_height_w = target_height + terrain_height
+    height_error = asset.data.root_pos_w[:, 2] - target_height_w
+    height_error = torch.nan_to_num(height_error, nan=0.0, posinf=0.0, neginf=0.0)
+    return torch.square(height_error.clamp(min=-1.0, max=1.0))
 
 
 def contact_no_vel(
@@ -633,4 +728,3 @@ def idle_when_commanded(
     is_idle = vel_magnitude < vel_threshold       # But not moving
     
     return (is_commanded & is_idle).float()
-
