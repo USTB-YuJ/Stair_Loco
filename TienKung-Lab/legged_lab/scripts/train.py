@@ -37,6 +37,16 @@ parser.add_argument(
     default=None,
     help="GPU index to run on. If set, overrides --device to cuda:<gpu>.",
 )
+parser.add_argument(
+    "--reset_optimizer",
+    action="store_true",
+    help="Load policy weights for transfer learning without restoring optimizer state.",
+)
+parser.add_argument(
+    "--freeze_dwaq_context",
+    action="store_true",
+    help="Freeze DWAQ encoder/decoder during an initial task-transfer phase.",
+)
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -122,7 +132,26 @@ def train():
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
         # load previously trained model
-        runner.load(resume_path)
+        runner.load(resume_path, load_optimizer=not args_cli.reset_optimizer)
+
+    if args_cli.freeze_dwaq_context:
+        frozen_prefixes = ("encoder.", "encode_mean_", "encode_logvar_", "decoder.")
+        frozen_names = []
+        for name, parameter in runner.alg.policy.named_parameters():
+            if name.startswith(frozen_prefixes):
+                parameter.requires_grad_(False)
+                frozen_names.append(name)
+        trainable_parameters = [
+            parameter for parameter in runner.alg.policy.parameters() if parameter.requires_grad
+        ]
+        runner.alg.optimizer = torch.optim.Adam(
+            trainable_parameters,
+            lr=runner.alg.learning_rate,
+        )
+        print(
+            f"[INFO] Frozen DWAQ context parameters for transfer: {len(frozen_names)}; "
+            f"trainable parameters: {len(trainable_parameters)}"
+        )
 
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)

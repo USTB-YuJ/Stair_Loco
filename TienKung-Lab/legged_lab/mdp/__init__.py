@@ -22,3 +22,4 @@ from isaaclab.envs.mdp import *
 
 from .events import *
 from .rewards import *
+from .three_step_rewards import *

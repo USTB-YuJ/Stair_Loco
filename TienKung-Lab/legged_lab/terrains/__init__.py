@@ -17,3 +17,4 @@
 # and is distributed under the BSD-3-Clause license.
 
 from .terrain_generator_cfg import *
+from .three_step_corridor import *

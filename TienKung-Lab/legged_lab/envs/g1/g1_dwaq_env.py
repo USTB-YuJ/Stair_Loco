@@ -139,17 +139,7 @@ class G1DwaqEnv(VecEnv):
         #     self.rgb_camera = None
 
         # Command generator
-        command_cfg = UniformVelocityCommandCfg(
-            asset_name="robot",
-            resampling_time_range=self.cfg.commands.resampling_time_range,
-            rel_standing_envs=self.cfg.commands.rel_standing_envs,
-            rel_heading_envs=self.cfg.commands.rel_heading_envs,
-            heading_command=self.cfg.commands.heading_command,
-            heading_control_stiffness=self.cfg.commands.heading_control_stiffness,
-            debug_vis=self.cfg.commands.debug_vis,
-            ranges=self.cfg.commands.ranges,
-        )
-        self.command_generator = UniformVelocityCommand(cfg=command_cfg, env=self)
+        self.command_generator = self._create_command_generator()
         self.reward_manager = RewardManager(self.cfg.reward, self)
 
         self.init_buffers()
@@ -164,6 +154,24 @@ class G1DwaqEnv(VecEnv):
         if "startup" in self.event_manager.available_modes:
             self.event_manager.apply(mode="startup")
         self.reset(env_ids)
+
+    def _create_command_generator(self):
+        """Create the default velocity command term.
+
+        Specialized tasks can override this factory without changing the
+        command behavior of existing G1/H1 DWAQ environments.
+        """
+        command_cfg = UniformVelocityCommandCfg(
+            asset_name="robot",
+            resampling_time_range=self.cfg.commands.resampling_time_range,
+            rel_standing_envs=self.cfg.commands.rel_standing_envs,
+            rel_heading_envs=self.cfg.commands.rel_heading_envs,
+            heading_command=self.cfg.commands.heading_command,
+            heading_control_stiffness=self.cfg.commands.heading_control_stiffness,
+            debug_vis=self.cfg.commands.debug_vis,
+            ranges=self.cfg.commands.ranges,
+        )
+        return UniformVelocityCommand(cfg=command_cfg, env=self)
 
     def _resolve_payload_mount_joints(self) -> tuple[list[int], list[str]]:
         """Resolve payload mount joints that are simulated but not policy-controlled."""

@@ -21,6 +21,11 @@ from legged_lab.envs.h1.h1_config import H1RewardCfg
 class H1DwaqRewardCfg(H1RewardCfg):
     """H1 reward baseline + DWAQ-specific terms."""
 
+    # Strengthen the existing joint-position limit penalty for H1 DWAQ.
+    # This still acts on the simulated joint position; target-level safety is
+    # intentionally left unchanged for this focused reward ablation.
+    dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=-4.0)
+
     # Keep the feet on their proper sides and add a margin before ankle meshes
     # can meet. These are soft training terms; physical foot self-collision is
     # intentionally left enabled in MuJoCo and Isaac Lab.
