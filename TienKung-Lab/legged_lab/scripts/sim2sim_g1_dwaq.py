@@ -940,11 +940,21 @@ class G1DwaqMujocoRunner:
 
     def run(self) -> None:
         """运行仿真循环"""
-        self.setup_keyboard_listener()
-        self.listener.start()
-        
-        # 创建 viewer
-        self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
+        headless_video = os.environ.get("SIM2SIM_HEADLESS_VIDEO", "0") == "1"
+        if not headless_video:
+            self.setup_keyboard_listener()
+            self.listener.start()
+        # Under a virtual X server, passive viewer synchronization can block
+        # indefinitely even though the offscreen video renderer is healthy.
+        # Keep the viewer for lifecycle/keyboard handling, but allow video
+        # recording to advance without waiting for its GUI refresh.
+        sync_viewer = os.environ.get("SIM2SIM_NO_VIEWER_SYNC", "0") != "1"
+
+        # A headless video run uses only MuJoCo's offscreen renderer.  This is
+        # useful on servers where a passive GLFW viewer cannot be initialized.
+        self.viewer = None
+        if not headless_video:
+            self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
         
         # 初始化观测历史 (填充初始观测)
         initial_obs = self.get_current_obs()
@@ -960,7 +970,7 @@ class G1DwaqMujocoRunner:
         
         try:
             while (
-                self.viewer.is_running()
+                (self.viewer is None or self.viewer.is_running())
                 and not self.stop_requested
                 and self.data.time < self.cfg.sim.sim_duration
             ):
@@ -1016,7 +1026,8 @@ class G1DwaqMujocoRunner:
                     mujoco.mj_step(self.model, self.data)
                     if self.video_recorder is not None:
                         self.video_recorder.maybe_record(self.data)
-                    self.viewer.sync()
+                    if sync_viewer and self.viewer is not None:
+                        self.viewer.sync()
                     
                     # 时间控制
                     elapsed = time.time() - step_start
@@ -1040,9 +1051,9 @@ class G1DwaqMujocoRunner:
                 self.video_recorder.close()
             if hasattr(self, 'limit_monitor'):
                 self.limit_monitor.save()
-            if hasattr(self, 'listener'):
+            if hasattr(self, 'listener') and self.listener is not None:
                 self.listener.stop()
-            if hasattr(self, 'viewer'):
+            if hasattr(self, 'viewer') and self.viewer is not None:
                 self.viewer.close()
             print("[INFO] 仿真结束")
 
